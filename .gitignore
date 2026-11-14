@@ -4,3 +4,39 @@
 **/build/
 local.properties
 *.jks
+
+# macOS metadata
+.DS_Store
+.AppleDouble/
+.LSOverride
+._*
+.Spotlight-V100/
+.Trashes/
+__MACOSX/
+
+# Build outputs and caches
+.kotlin/
+.externalNativeBuild/
+dist/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.o
+*.so
+*.log
+__pycache__/
+*.py[cod]
+
+# Local configuration and editor state
+*.keystore
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
