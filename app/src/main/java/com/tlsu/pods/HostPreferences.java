@@ -1,0 +1,216 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+package com.tlsu.pods;
+
+import android.app.Activity;
+import android.bluetooth.BluetoothDevice;
+import android.content.Context;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.AttributeSet;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+// All settings and selection dialogs belong to the host's preference framework.
+// No module-owned views, AlertDialogs, styles, layouts, AndroidX or COUI copies.
+final class HostPreferences {
+    private static final ExecutorService IO=Executors.newSingleThreadExecutor(r->{Thread t=new Thread(r,"ColorPodsCOUI");t.setDaemon(true);return t;});
+    private final Object fragment;
+    private final ClassLoader loader;
+    private final ColorPodsModule module;
+    private final Activity activity;
+    private final BridgeClient bridge;
+    private final Handler main=new Handler(Looper.getMainLooper());
+    private final Map<Integer,Object> controls=new LinkedHashMap<>();
+    private final Map<Object, Boolean> switchRows=new HashMap<>();
+    private final Map<String,Object> attRows=new LinkedHashMap<>();
+    private final Map<Integer,byte[]> attValues=new HashMap<>();
+    private Object statusRow,vendorRow,routeRow,multiRow,autoMediaRow,routeStatus,reverseRow,reconnectRow,transRead,hearingRead,root;
+    private Bundle snapshot=Bundle.EMPTY;
+    private boolean active,busy;
+    private String lastError;
+    private String connectionError;
+    private final Class<?> prefClass;
+
+    HostPreferences(Object fragment,ClassLoader loader,ColorPodsModule module) throws Exception {
+        this.fragment=fragment;this.loader=loader;this.module=module;
+        activity=(Activity)Reflect.call(fragment,"getActivity",new Class[0]);
+        if(activity==null)throw new IllegalStateException("Host activity unavailable");
+        bridge=new BridgeClient(activity);prefClass=Class.forName("androidx.preference.Preference",false,loader);
+    }
+    private Object create(String name) throws Exception {
+        Class<?> cls=Class.forName("com.coui.appcompat.preference."+name,true,loader);
+        try{return cls.getConstructor(Context.class).newInstance(activity);}
+        catch(NoSuchMethodException e){return cls.getConstructor(Context.class,AttributeSet.class).newInstance(activity,null);}
+    }
+    private void call(Object row,String name,Class<?> type,Object arg) throws Exception {Reflect.call(row,name,new Class[]{type},arg);}
+    private void setField(Object row,String name,Object value) throws Exception {
+        for(Class<?> c=row.getClass();c!=null;c=c.getSuperclass())try{var f=c.getDeclaredField(name);f.setAccessible(true);f.set(row,value);return;}catch(NoSuchFieldException ignored){}
+        throw new NoSuchFieldException(name);
+    }
+    private Object add(Object parent,String kind,String key,String title) throws Exception {
+        Object row=create(kind);call(row,"D0",String.class,key);call(row,"O0",CharSequence.class,title);call(row,"J0",boolean.class,false);
+        if(!Boolean.TRUE.equals(Reflect.call(parent,"W0",new Class[]{prefClass},row)))throw new IllegalStateException("Host rejected preference "+key);
+        return row;
+    }
+    private Object category(String key,String title,int order) throws Exception {
+        Object row=add(root,"COUIPreferenceCategory",key,title);call(row,"I0",int.class,order);return row;
+    }
+    private void summary(Object row,String text) throws Exception {call(row,"L0",CharSequence.class,text);}
+    private void enabled(Object row,boolean value) throws Exception {call(row,"x0",boolean.class,value);}
+    private void checked(Object row,boolean value) throws Exception {call(row,"W0",boolean.class,value);}
+    private Object listener(String name,java.util.function.Function<Object[],Object> action) throws Exception {
+        Class<?> type=Class.forName("androidx.preference.Preference$"+name,false,loader);
+        return Proxy.newProxyInstance(loader,new Class[]{type},(proxy,method,args)->{
+            if(method.getDeclaringClass()==Object.class)return switch(method.getName()){
+                case "toString"->"ColorPodsCOUIListener";case "hashCode"->System.identityHashCode(proxy);case "equals"->proxy==args[0];default->null;};
+            return action.apply(args);
+        });
+    }
+    private void click(Object row,Runnable action) throws Exception {
+        Object listener=listener("d",args->{action.run();return true;});
+        call(row,"H0",Class.forName("androidx.preference.Preference$d",false,loader),listener);
+    }
+    private void change(Object row,java.util.function.Consumer<Object> action) throws Exception {
+        Object listener=listener("c",args->{action.accept(args[1]);return false;});
+        call(row,"G0",Class.forName("androidx.preference.Preference$c",false,loader),listener);
+    }
+    private void entries(Object row,String[] names,String[] values) throws Exception {
+        if(java.util.Arrays.equals((Object[])Reflect.field(row,"X"),names)&&java.util.Arrays.equals((Object[])Reflect.field(row,"Y"),values))return;
+        setField(row,"X",names);setField(row,"Y",values);Reflect.call(row,"T",new Class[0]);
+    }
+    private Object list(Object parent,String key,String title,String[] names,String[] values) throws Exception {
+        Object row=add(parent,"COUIListPreference",key,title);entries(row,names,values);
+        setField(row,"R",title);setField(row,"V","取消");setField(row,"U","确定");
+        return row;
+    }
+    void inject() throws Exception {
+        long version=activity.getPackageManager().getPackageInfo("com.heytap.mydevices",0).getLongVersionCode();
+        if(version!=1725000)throw new IllegalStateException("Unsupported MyDevices version "+version);
+        root=Reflect.call(fragment,"getPreferenceScreen",new Class[0]);
+        if(Reflect.call(fragment,"findPreference",new Class[]{CharSequence.class},"cat_colorpods_identity")!=null)return;
+        String[] existing={"cat_airpods_sound_quality","cat_airpods_settings","pref_airpods_spacer_before_disconnect","cat_airpods_disconnect","pref_airpods_bottom_disconnect_gap"};
+        int[] orders={0,100,10000,10001,10002};
+        for(int i=0;i<existing.length;i++){Object row=Reflect.call(fragment,"findPreference",new Class[]{CharSequence.class},existing[i]);if(row!=null)call(row,"I0",int.class,orders[i]);}
+        Object identity=category("cat_colorpods_identity","Apple 设备功能",200);
+        statusRow=add(identity,"COUIPreference","colorpods_status","连接与身份状态");call(statusRow,"K0",boolean.class,false);summary(statusRow,"正在读取系统蓝牙状态…");
+        vendorRow=add(identity,"COUISwitchPreference","colorpods_vendor","以 Apple 设备身份连接");enabled(vendorRow,false);
+        change(vendorRow,value->{Bundle b=request();b.putBoolean("enabled",(Boolean)value);operation(BridgeClient.VENDOR,b,r->{snapshot=r;lastError="身份设置已保存，请关闭再开启蓝牙后重新连接耳机";});});
+        Object actions=category("cat_colorpods_actions","更多耳机设置",300);
+        controlList(actions,0x01,new String[]{"自动","始终右侧","始终左侧"},new int[]{0,1,2});
+        controlList(actions,0x17,new String[]{"默认","较慢","最慢"},new int[]{0,1,2});
+        controlList(actions,0x18,new String[]{"默认","较短","最短"},new int[]{0,1,2});
+        controlList(actions,0x23,new String[]{"默认","较长","最长"},new int[]{0,1,2});
+        for(int cmd:new int[]{0x25,0x1b,0x34,0x26,0x35,0x20})controlSwitch(actions,cmd);
+        String[] percent=new String[101],strength=new String[101];for(int i=0;i<=100;i++){percent[i]=i+"%";strength[i]=Integer.toString(100-i);}
+        Object adaptive=list(actions,"colorpods_control_2e","自适应强度",percent,strength);controls.put(0x2e,adaptive);change(adaptive,v->sendControl(0x2e,new byte[]{(byte)Integer.parseInt(v.toString())}));
+        Object trans=category("cat_colorpods_transparency","通透模式定制",400);
+        transRead=add(trans,"COUIJumpPreference","colorpods_read_transparency","读取通透设置");summary(transRead,"先读取耳机现有设置，再进行调节");click(transRead,()->read(AttCodec.TRANSPARENCY));
+        attSwitch(trans,AttCodec.TRANSPARENCY,"enabled","自定义通透");
+        tuningRows(trans,AttCodec.TRANSPARENCY);
+        Object hearing=category("cat_colorpods_hearing","听力辅助",500);
+        hearingRead=add(hearing,"COUIJumpPreference","colorpods_read_hearing","读取听力辅助设置");summary(hearingRead,"保留耳机现有听力图");click(hearingRead,()->readHearing());
+        attSwitch(hearing,AttCodec.LOUD_SOUND,"enabled","大音量降低");
+        Object hearingToggle=add(hearing,"COUISwitchPreference","colorpods_control_2c","助听器");controls.put(0x2c,hearingToggle);switchRows.put(hearingToggle,true);summary(hearingToggle,"开启会停用自定义通透；保留已有听力图");
+        change(hearingToggle,value->{boolean enable=(Boolean)value;Bundle first=request();first.putInt("command",0x2c);first.putByteArray("value",new byte[]{1,(byte)(enable?1:2)});
+            operation(BridgeClient.CONTROL,first,r->{snapshot=r;main.post(()->sendControl(0x33,new byte[]{(byte)(enable?1:2)}));});});
+        tuningRows(hearing,AttCodec.HEARING_AID);
+        Object routing=category("cat_colorpods_routing","多设备连接",600);
+        multiRow=add(routing,"COUISwitchPreference","colorpods_multipoint","多设备协同");summary(multiRow,"与另一台设备协商音频切换，保留耳机控制连接");
+        change(multiRow,value->{Bundle b=request();b.putBoolean("enabled",(Boolean)value);operation(BridgeClient.MULTIPOINT,b,r->{snapshot=r;});});
+        autoMediaRow=add(routing,"COUISwitchPreference","colorpods_auto_media","手机播放时自动切回");summary(autoMediaRow,"在 Android 播放器开始播放时协商接管耳机");
+        change(autoMediaRow,value->{Bundle b=request();b.putBoolean("autoMedia",(Boolean)value);operation(BridgeClient.MULTIPOINT,b,r->{snapshot=r;});});
+        routeStatus=add(routing,"COUIPreference","colorpods_route_status","设备与音频来源");call(routeStatus,"K0",boolean.class,false);
+        routeRow=list(routing,"colorpods_route","将音频切回此手机",new String[0],new String[0]);
+        change(routeRow,value->route(value.toString(),false));
+        reverseRow=add(routing,"COUIJumpPreference","colorpods_route_reverse","撤销其他设备的切换");click(reverseRow,()->route(snapshot.getString("audioSource"),true));
+        reconnectRow=add(routing,"COUIJumpPreference","colorpods_route_reconnect","重新连接耳机控制");summary(reconnectRow,"音频交给其他设备后，可单独恢复控制连接");click(reconnectRow,()->{Bundle b=request();b.putBoolean("connectOnly",true);operation(BridgeClient.ROUTE,b,r->{snapshot=r;});});
+        update();module.info("All settings inserted as host COUI preferences");
+    }
+    private void controlList(Object parent,int cmd,String[] names,int[] values) throws Exception {
+        String[] strings=new String[values.length];for(int i=0;i<values.length;i++)strings[i]=Integer.toString(values[i]);
+        Object row=list(parent,"colorpods_control_"+Integer.toHexString(cmd),Protocol.COMMANDS.get(cmd),names,strings);controls.put(cmd,row);
+        change(row,v->sendControl(cmd,new byte[]{(byte)Integer.parseInt(v.toString())}));
+    }
+    private void controlSwitch(Object parent,int cmd) throws Exception {
+        Object row=add(parent,"COUISwitchPreference","colorpods_control_"+Integer.toHexString(cmd),Protocol.COMMANDS.get(cmd));controls.put(cmd,row);switchRows.put(row,true);
+        change(row,v->sendControl(cmd,new byte[]{(byte)((Boolean)v?1:2)}));
+    }
+    private void attSwitch(Object parent,int handle,String field,String title) throws Exception {
+        Object row=add(parent,"COUISwitchPreference","colorpods_att_"+handle+"_"+field,title);attRows.put(handle+":"+field,row);switchRows.put(row,true);
+        change(row,v->patch(handle,field,(Boolean)v?1:0));
+    }
+    private void tuningRows(Object parent,int handle) throws Exception {
+        String[][] fields={{"amplification","放大量"},{"tone","音调"},{"noise","环境噪声降低"},{"voice","本声放大"}};
+        String[] names=new String[21],values=new String[21];for(int i=0;i<=20;i++){names[i]=i*5+"%";values[i]=Float.toString(i/20f);}
+        for(String[] f:fields){Object row=list(parent,"colorpods_att_"+handle+"_"+f[0],f[1],names,values);attRows.put(handle+":"+f[0],row);change(row,v->patch(handle,f[0],Float.parseFloat(v.toString())));}
+        attSwitch(parent,handle,"boost","对话增强");
+    }
+    private String address() throws Exception {
+        Object vm=Reflect.call(activity,"getViewModel",new Class[0]);BluetoothDevice d=(BluetoothDevice)Reflect.call(vm,"getBluetoothDevice",new Class[0]);return d==null?null:d.getAddress();
+    }
+    private Bundle request(){try{return BridgeClient.forDevice(address());}catch(Exception e){throw new IllegalStateException(e);}}
+    void start(){active=true;main.removeCallbacksAndMessages(null);refresh();}
+    void stop(){active=false;main.removeCallbacksAndMessages(null);}
+    private boolean alive(){return active&&!activity.isDestroyed()&&!activity.isFinishing();}
+    private void refresh(){
+        if(!alive())return;if(busy){main.postDelayed(this::refresh,2000);return;}
+        Bundle b=request();IO.execute(()->{Bundle result=null;String error=null;try{result=bridge.request(BridgeClient.STATUS,b);}catch(Exception e){error=e.getMessage();}
+            Bundle r=result;String message=error;main.post(()->{if(!alive())return;if(r!=null){snapshot=r;connectionError=null;}else connectionError=message;try{update();}catch(Exception e){module.error("COUI update failed",e);}main.postDelayed(this::refresh,2500);});});
+    }
+    private void update() throws Exception {
+        boolean ready=snapshot.getBoolean("controlReady");long[] identity=snapshot.getLongArray("nativeStatus");
+        String text=ready?"耳机已连接，原生控制通道就绪":snapshot.getBoolean("connected")?"耳机已连接，等待原生控制通道":"等待耳机连接";
+        if(!ready&&snapshot.getBoolean("remoteAudioOwner"))text="音频已交给其他设备，控制连接待恢复";
+        if(identity!=null)text+="；"+(identity[1]==0?"身份 Hook 未装载":identity[3]>0?"Apple 身份已提交":"身份 Hook 已装载，等待蓝牙重启");
+        if(lastError!=null)text+="\n"+lastError;
+        if(connectionError!=null)text+="\n"+connectionError;
+        summary(statusRow,text);enabled(vendorRow,identity!=null&&!busy);if(identity!=null)checked(vendorRow,identity[0]!=0);
+        summary(vendorRow,"修改后需关闭再开启蓝牙；通透定制与听力辅助需耳机支持");
+        Bundle c=snapshot.getBundle("controls");if(c==null)c=Bundle.EMPTY;
+        Bundle pending=snapshot.getBundle("pendingControls");if(pending==null)pending=Bundle.EMPTY;
+        for(var entry:controls.entrySet()){
+            int command=entry.getKey();Object row=entry.getValue();String key=Integer.toHexString(command);byte[] value=pending.containsKey(key)?pending.getByteArray(key):c.getByteArray(key);boolean known=value!=null&&value.length>0;
+            enabled(row,ready&&!busy&&(!switchRows.containsKey(row)||known));
+            if(switchRows.containsKey(row)){if(known)checked(row,command==0x2c?value.length>1&&value[0]==1&&value[1]==1:value[0]==1);if(command!=0x2c)summary(row,known?"":"尚未收到此功能的耳机状态");}
+            else{call(row,"setValue",String.class,known?Integer.toString(value[0]&255):"");Object label=Reflect.call(row,"d1",new Class[0]);summary(row,known?(label==null?Integer.toString(value[0]&255):label.toString()):"尚未收到耳机状态");}
+            if(pending.containsKey(key))summary(row,"已发送，等待耳机同步");
+        }
+        boolean attReady=ready&&identity!=null&&identity[0]!=0&&identity[1]!=0&&identity[3]>0;
+        enabled(transRead,attReady&&!busy);enabled(hearingRead,attReady&&!busy);
+        if(!ready)attValues.clear();
+        for(var entry:attRows.entrySet()){
+            String[] parts=entry.getKey().split(":");int handle=Integer.parseInt(parts[0]);String field=parts[1];Object row=entry.getValue();byte[] data=attValues.get(handle);
+            boolean supported=data!=null&&(!field.equals("voice")||data.length>=104);enabled(row,attReady&&!busy&&supported);
+            if(!supported){summary(row,"先读取耳机设置");continue;}
+            float value=AttCodec.value(handle,data,field);
+            if(switchRows.containsKey(row)){checked(row,value>0.5f);summary(row,"");}
+            else{call(row,"setValue",String.class,Float.toString(value));summary(row,Math.round(value*100)+"%");}
+        }
+        boolean multi=snapshot.getBoolean("multipoint");checked(multiRow,multi);enabled(multiRow,identity!=null&&!busy);
+        checked(autoMediaRow,snapshot.getBoolean("autoMedia",true));enabled(autoMediaRow,multi&&identity!=null&&!busy);
+        enabled(reconnectRow,multi&&identity!=null&&identity[0]!=0&&identity[1]!=0&&identity[3]>0&&!ready&&!busy);
+        String[] p=snapshot.getStringArray("peers");String self=snapshot.getString("selfAddress");ArrayList<String> targets=new ArrayList<>(),names=new ArrayList<>();Bundle types=snapshot.getBundle("peerTypes");if(types==null)types=Bundle.EMPTY;
+        if(p!=null)for(String peer:p)if(!peer.equals(self)){targets.add(peer);names.add(types.getString(peer,"另一台设备"));}
+        entries(routeRow,names.toArray(new String[0]),targets.toArray(new String[0]));enabled(routeRow,multi&&attReady&&!busy&&!targets.isEmpty());summary(routeRow,targets.isEmpty()?"尚未发现第二台设备，请先配对并连接":"从另一台设备切换音频到手机");
+        String source=snapshot.getString("audioSource");boolean otherSource=source!=null&&!source.equals(self)&&targets.contains(source)&&snapshot.getInt("audioSourceType")!=0;
+        String routeText=targets.isEmpty()?"仅连接此手机":"同时连接：此手机、"+String.join("、",names);
+        routeText+="；音频："+(snapshot.getInt("audioSourceType")==0?"空闲":source!=null&&source.equals(self)?"此手机":types.getString(source,"另一台设备"));
+        if(snapshot.getString("routeNotice")!=null)routeText+="\n"+snapshot.getString("routeNotice");summary(routeStatus,routeText);enabled(reverseRow,multi&&attReady&&!busy&&otherSource);
+    }
+    private void sendControl(int command,byte[] value){Bundle b=request();b.putInt("command",command);b.putByteArray("value",value);operation(BridgeClient.CONTROL,b,r->{snapshot=r;});}
+    private void route(String target,boolean reverse){Bundle b=request();b.putString("target",target);b.putBoolean("reverse",reverse);operation(BridgeClient.ROUTE,b,r->{snapshot=r;lastError=r.getBoolean("routeConfirmed")?"耳机已确认切换":r.getBoolean("audioReady")?"手机音频通道已接通，等待耳机更新来源":"切换请求已发送，等待耳机确认";});}
+    private void read(int handle){Bundle b=request();b.putInt("handle",handle);operation(BridgeClient.ATT_READ,b,r->{attValues.put(handle,r.getByteArray("value"));});}
+    private void readHearing(){Bundle b=request();b.putInt("handle",AttCodec.HEARING_AID);operation(BridgeClient.ATT_READ,b,r->{attValues.put(AttCodec.HEARING_AID,r.getByteArray("value"));main.post(()->read(AttCodec.LOUD_SOUND));});}
+    private void patch(int handle,String field,float value){Bundle b=request();b.putInt("handle",handle);b.putString("field",field);b.putFloat("value",value);operation(BridgeClient.ATT_PATCH,b,r->{attValues.put(handle,r.getByteArray("value"));});}
+    private void operation(int operation,Bundle b,java.util.function.Consumer<Bundle> callback){
+        if(busy)return;busy=true;lastError=null;try{update();}catch(Exception ignored){}
+        IO.execute(()->{Bundle response=null;String error=null;try{response=bridge.request(operation,b);}catch(Exception e){error=e.getMessage();}
+            Bundle result=response;String message=error;main.post(()->{busy=false;if(!alive())return;lastError=message;if(result!=null)callback.accept(result);try{update();}catch(Exception e){module.error("COUI operation update failed",e);}});});
+    }
+}
