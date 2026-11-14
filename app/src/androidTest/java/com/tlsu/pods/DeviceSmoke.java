@@ -9,12 +9,12 @@ import android.os.SystemClock;
 // Foreground instrumentation avoids ColorOS freezing a background test between
 // a temporary setting change and restoration. No exported debug entry points.
 public final class DeviceSmoke extends Instrumentation {
-    private boolean attOnly,doRouting,handoffTest,confirmationOnly;
+    private boolean attOnly,doRouting,handoffTest,confirmationOnly,automatic;
     private String probe;
     private int watch;
     private final StringBuilder report=new StringBuilder();
     private boolean failed;
-    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);if(arguments!=null){attOnly="true".equals(arguments.getString("attOnly"));doRouting="true".equals(arguments.getString("routing"));probe=arguments.getString("probe");handoffTest="true".equals(arguments.getString("handoff"));confirmationOnly="true".equals(arguments.getString("confirmation"));watch=Integer.parseInt(arguments.getString("watch","0"));}start();}
+    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);if(arguments!=null){attOnly="true".equals(arguments.getString("attOnly"));doRouting="true".equals(arguments.getString("routing"));automatic="true".equals(arguments.getString("automatic"));probe=arguments.getString("probe");handoffTest="true".equals(arguments.getString("handoff"));confirmationOnly="true".equals(arguments.getString("confirmation"));watch=Integer.parseInt(arguments.getString("watch","0"));}start();}
     private void emit(String value){report.append(value).append('\n');Bundle b=new Bundle();b.putString("stream",value+"\n");sendStatus(0,b);}
     @Override public void onStart(){
         try{
@@ -25,7 +25,8 @@ public final class DeviceSmoke extends Instrumentation {
                 for(var device:BluetoothAdapter.getDefaultAdapter().getBondedDevices())try{
                     Bundle s=bridge.request(BridgeClient.STATUS,BridgeClient.forDevice(device.getAddress()));Bundle c=s.getBundle("controls");
                     if(confirmationOnly&&s.getInt("controlConfirmationVersion")!=1)throw new AssertionError("New confirmation backend is not loaded");
-                    if(s.getBoolean("controlReady")&&c!=null&&c.getByteArray("17")!=null){address=device.getAddress();status=s;break;}
+                    boolean airpods=false;if(automatic&&device.getUuids()!=null)for(var uuid:device.getUuids())if(uuid.toString().equalsIgnoreCase("74ec2172-0bad-4d01-8f77-997b2be0722a"))airpods=true;
+                    if(airpods||s.getBoolean("controlReady")&&c!=null&&c.getByteArray("17")!=null){address=device.getAddress();status=s;break;}
                 }catch(Exception e){error=e.toString();}
                 if(address==null)SystemClock.sleep(250);
             }
@@ -51,6 +52,13 @@ public final class DeviceSmoke extends Instrumentation {
                 emit("PASS: observed actual control channel over "+watch+" seconds");return;
             }
             if(handoffTest){testHandoff(bridge,address,status);return;}
+            if(automatic){
+                emit("Automatic route baseline: control="+status.getBoolean("controlReady")+" sessions="+status.getInt("controlSessions")+" drops="+status.getInt("controlDrops"));
+                Bundle request=BridgeClient.forDevice(address);request.putBoolean("automatic",true);
+                Bundle result=bridge.request(BridgeClient.ROUTE,request);
+                if(!result.getBoolean("routeConfirmed")||!result.getBoolean("audioReady")||result.getInt("audioSourceType")!=2||!result.getString("selfAddress","").equals(result.getString("audioSource")))throw new AssertionError("Automatic route did not resume local MEDIA");
+                emit("PASS: one automatic route request restored local MEDIA on connected A2DP");return;
+            }
             if(probe!=null){probe(bridge,address,status);return;}
             if(!attOnly){
                 byte original=status.getBundle("controls").getByteArray("17")[0],temporary=(byte)(original==0?1:0);

@@ -2,6 +2,21 @@ package com.tlsu.pods;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public class RoutingTest {
+    @Test public void threeHostRoutingUsesTheActualSourceRegardlessOfRecordOrder(){
+        var peers=java.util.List.of(new Routing.Peer("phone",2,1),new Routing.Peer("mac",2,3),new Routing.Peer("self",2,1));
+        assertEquals("mac",Routing.target("self",null,null,peers));
+        assertEquals("phone",Routing.target("self",null,"phone",peers));
+        assertEquals("phone",Routing.target("self","phone","mac",peers));
+    }
+    @Test public void anInactiveThirdHostCannotBecomeTheTakeoverTarget(){
+        var peers=java.util.List.of(new Routing.Peer("phone",0,3),new Routing.Peer("mac",2,1));
+        assertEquals("mac",Routing.target("self",null,"phone",peers));
+        assertThrows(IllegalArgumentException.class,()->Routing.target("self","phone",null,peers));
+    }
+    @Test public void multipleIdleHostsNeedDiscoveryInsteadOfAnArbitraryFirstTarget(){
+        var peers=java.util.List.of(new Routing.Peer("phone",2,1),new Routing.Peer("mac",2,1));
+        assertNull(Routing.target("self",null,null,peers));
+    }
     @Test public void anIdleRouteDoesNotEraseAnExplicitCallReport(){
         var call=new Routing.Message("peer","Mac",false,false,false,true,501);
         var transition=new Routing.Message("peer","Mac",false,false,false,true,100);

@@ -41,11 +41,11 @@ public class HandoffStateTest {
     @Test public void oldSourceSnapshotIsDifferentFromANewHandoffAfterSelection(){
         HandoffState s=new HandoffState();var claim=s.beginClaim("buds");
         assertNull(s.source("buds",false,2));assertTrue(s.claiming(claim));
-        s.source("buds",true,0);var remote=s.source("buds",false,2);
+        s.arm(claim);s.source("buds",true,0);var remote=s.source("buds",false,2);
         assertNotNull(remote);assertFalse(s.claiming(claim));assertTrue(s.current(remote));
     }
     @Test public void ownershipLossAfterLocalSelectionCancelsTheClaim(){
-        HandoffState s=new HandoffState();var claim=s.beginClaim("buds");s.source("buds",true,0);
+        HandoffState s=new HandoffState();var claim=s.beginClaim("buds");s.arm(claim);s.source("buds",true,0);
         assertNotNull(s.ownership("buds",0));assertFalse(s.claiming(claim));
     }
     @Test public void disablingInvalidatesOldWorkWithoutFinishingItsReplacement(){
@@ -56,5 +56,27 @@ public class HandoffStateTest {
     @Test public void anOwnershipAckAloneCannotEraseAnObservedRemoteSource(){
         HandoffState s=new HandoffState();s.remote("buds");s.ownership("buds",1);
         assertTrue(s.remoteOwns("buds"));s.source("buds",true,2);assertFalse(s.remoteOwns("buds"));
+    }
+    @Test public void reconnectSnapshotsCannotCancelPlaybackBeforeOwnershipWasSent(){
+        HandoffState s=new HandoffState();var claim=s.beginClaim("buds");
+        s.source("buds",true,0);assertNull(s.ownership("buds",0));
+        assertNull(s.source("buds",false,2));assertTrue(s.claiming(claim));
+        s.arm(claim);s.source("buds",true,0);
+        assertNotNull(s.ownership("buds",0));assertFalse(s.claiming(claim));
+    }
+    @Test public void armingAnOldClaimCannotChangeItsReplacement(){
+        HandoffState s=new HandoffState();var old=s.beginClaim("buds");var current=s.beginClaim("buds");
+        s.arm(old);s.source("buds",true,0);assertNull(s.ownership("buds",0));assertTrue(s.claiming(current));
+        assertNotNull(s.requestRemote("buds"));assertFalse(s.claiming(current));
+    }
+    @Test public void aPlaybackIntentSurvivesTransportEventsWhileItIsStillReconnecting(){
+        HandoffState s=new HandoffState();var claim=s.beginClaim("buds");
+        s.disconnected("buds");assertTrue(s.preparing(claim));
+        s.source("buds",true,0);s.ownership("buds",0);assertTrue(s.claiming(claim));
+        s.arm(claim);s.disconnected("buds");assertFalse(s.claiming(claim));
+    }
+    @Test public void anExplicitPeerRequestCanStillCancelAnIntentWaitingForReconnect(){
+        HandoffState s=new HandoffState();var claim=s.beginClaim("buds");s.disconnected("buds");
+        assertNotNull(s.requestRemote("buds"));assertFalse(s.preparing(claim));
     }
 }

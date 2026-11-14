@@ -21,6 +21,8 @@ public final class ColorPodsModule extends XposedModule {
         if (param.getPackageName().equals("com.heytap.mydevices")) {
             try { NativeUi.install(this, param.getClassLoader()); }
             catch (Throwable e) { error("MyDevices UI adapter unavailable", e); }
+            try { HostHandoffCapsule.install(this,param.getClassLoader()); }
+            catch (Throwable e) { error("Handoff capsule adapter unavailable",e); }
         }
         if (!param.getPackageName().equals("com.android.bluetooth")) return;
         backend = new BluetoothBackend(this);
@@ -51,7 +53,7 @@ public final class ColorPodsModule extends XposedModule {
             Class<?> stub = Class.forName("android.bluetooth.IOplusBluetooth$Stub", false, param.getClassLoader());
             hook(Reflect.method(stub, "onTransact", int.class, android.os.Parcel.class, android.os.Parcel.class, int.class)).intercept(chain -> {
                 int code = (int) chain.getArg(0) - BridgeClient.TRANSACTION_BASE;
-                if (code >= BridgeClient.STATUS && code <= BridgeClient.MULTIPOINT
+                if (code >= BridgeClient.STATUS && code <= BridgeClient.HANDOFF_NOTICE
                     && chain.getThisObject().getClass().getName().equals("com.oplus.bluetooth.btservice.AdapterServiceEnhancer"))
                     return backend.onTransact(code, (android.os.Parcel)chain.getArg(1), (android.os.Parcel)chain.getArg(2), (int)chain.getArg(3));
                 return chain.proceed();

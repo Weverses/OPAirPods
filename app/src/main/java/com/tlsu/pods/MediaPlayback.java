@@ -44,6 +44,10 @@ final class MediaPlayback {
     static boolean paused(List<MediaController> controllers){
         for(MediaController c:controllers){PlaybackState s=c.getPlaybackState();if(s!=null&&(s.getState()==PlaybackState.STATE_PLAYING||s.getState()==PlaybackState.STATE_BUFFERING))return false;}return true;
     }
+    static void pauseAgain(Context context,List<MediaController> controllers){
+        if(controllers.isEmpty()){pause(context);return;}
+        for(MediaController c:controllers)if(local(c))c.getTransportControls().pause();
+    }
     static int resume(Context context,List<MediaController> paused,boolean fallback){
         int count=resume(paused);
         if(paused.isEmpty()&&fallback){

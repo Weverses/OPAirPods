@@ -51,6 +51,14 @@ final class Routing {
     static byte[] reverse(String target){return frame(target,dict("audioRoutingSetOwnershipToFalse",true,"audioRoutingShowReverseUI",true,"reason","ReverseBannerTapped"));}
     static byte[] ownership(boolean own){return new byte[]{4,0,4,0,9,0,6,(byte)(own?1:0),0,0,0};}
     record Peer(String address,int role,int state){boolean takingOver(){return state>=0x10&&(state&2)==0&&state!=0x15;}}
+    static String target(String self,String requested,String source,List<Peer> records){
+        var active=records.stream().filter(p->!p.address().equals(self)&&p.role()!=0).collect(java.util.stream.Collectors.toList());
+        if(requested!=null){if(active.stream().noneMatch(p->p.address().equals(requested)))throw new IllegalArgumentException("所选设备已断开");return requested;}
+        if(source!=null&&active.stream().anyMatch(p->p.address().equals(source)))return source;
+        var owners=active.stream().filter(p->(p.state()&2)!=0).collect(java.util.stream.Collectors.toList());
+        if(owners.size()==1)return owners.get(0).address();
+        return active.size()==1?active.get(0).address():null;
+    }
     static List<Peer> peerRecords(byte[] data,int n){
         peers(data,n);List<Peer> result=new ArrayList<>();for(int i=0;i<(data[8]&255);i++){int at=9+i*8;result.add(new Peer(mac(data,at,false),data[at+6]&255,data[at+7]&255));}return result;
     }
