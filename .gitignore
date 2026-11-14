@@ -5,6 +5,9 @@
 local.properties
 *.jks
 
+# Local release and validation notes
+/UPDATE_NOTES.local.md
+
 # macOS metadata
 .DS_Store
 .AppleDouble/
