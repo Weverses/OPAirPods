@@ -2,6 +2,13 @@ package com.tlsu.pods;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public class RoutingTest {
+    @Test public void anIdleRouteDoesNotEraseAnExplicitCallReport(){
+        var call=new Routing.Message("peer","Mac",false,false,false,true,501);
+        var transition=new Routing.Message("peer","Mac",false,false,false,true,100);
+        var stopped=new Routing.Message("peer","Mac",false,false,false,false,100);
+        assertTrue(call.decisive());assertTrue(call.call());assertFalse(transition.decisive());
+        assertTrue(stopped.decisive());assertFalse(stopped.call());
+    }
     @Test public void routingMessagesKeepDictionaryKeysAndDoNotReadTheFollowingFrame() {
         String peer="AA:BB:CC:DD:EE:FF",self="11:22:33:44:55:66";
         byte[] nearby=Routing.showNearby(peer);assertEquals(nearby.length-14,(nearby[12]&255)+((nearby[13]&255)<<8));

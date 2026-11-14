@@ -30,3 +30,5 @@ Compile-only API: `io.github.libxposed:api:102.0.0`, https://github.com/libxpose
 The OPACK format and decoded fixtures were independently checked with pyatv's OPACK implementation (https://github.com/postlund/pyatv/blob/master/pyatv/support/opack.py). That reference script is used locally for verification and is not bundled in the APK or source distribution. The ColorPods codec is implemented locally from the wire format.
 
 Handoff sequencing was also compared with the public hardware observations in https://github.com/zackb/tether/blob/main/docs/BLUETOOTH.md. These observations guide tests; they do not establish compatibility with every AirPods firmware.
+
+The AirPods-only HFP XAPL battery-extension workaround follows the firmware failure observations in https://github.com/librepods-org/librepods/issues/782. The local API102 JNI adapter is implemented independently; AACP battery reporting remains enabled.

@@ -26,6 +26,11 @@ final class NativeUi {
         module.hook(Reflect.method(activity,"onBackPressed")).intercept(chain -> {
             return back((Activity)chain.getThisObject())?null:chain.proceed();
         });
+        module.hook(Reflect.method(activity,"onResume")).intercept(chain -> {
+            Object result=chain.proceed();
+            Object home=Reflect.call(chain.getThisObject(),"preferencesFragment",new Class[0]);
+            HostPreferences p=CONTROLLERS.get(home);if(p!=null)p.resume();return result;
+        });
         Class<?> page=Class.forName("aa.rc",false,loader);
         module.hook(Reflect.method(page,"onCreatePreferences",Bundle.class,String.class)).intercept(chain -> {
             Object result=chain.proceed();HostPreferences p=pageOwner(chain.getThisObject());

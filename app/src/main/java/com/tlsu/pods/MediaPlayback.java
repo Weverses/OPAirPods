@@ -11,10 +11,14 @@ import java.util.List;
 final class MediaPlayback {
     private MediaPlayback(){}
     static List<MediaController> pause(Context context){
+        return pause(context,null);
+    }
+    static List<MediaController> pause(Context context,MediaController preferred){
         List<MediaController> paused=new ArrayList<>();
         try{
             MediaSessionManager manager=(MediaSessionManager)context.getSystemService(Context.MEDIA_SESSION_SERVICE);
             if(manager!=null)for(MediaController controller:manager.getActiveSessions(null)){
+                if(!local(controller)||(preferred!=null&&!preferred.getSessionToken().equals(controller.getSessionToken())))continue;
                 PlaybackState state=controller.getPlaybackState();
                 if(state!=null&&(state.getState()==PlaybackState.STATE_PLAYING||state.getState()==PlaybackState.STATE_BUFFERING)){
                     controller.getTransportControls().pause();paused.add(controller);
@@ -37,11 +41,25 @@ final class MediaPlayback {
     static int resume(List<MediaController> paused){
         int resumed=0;for(MediaController controller:paused){PlaybackState state=controller.getPlaybackState();if(state!=null&&state.getState()==PlaybackState.STATE_PAUSED){controller.getTransportControls().play();resumed++;}}return resumed;
     }
+    static boolean paused(List<MediaController> controllers){
+        for(MediaController c:controllers){PlaybackState s=c.getPlaybackState();if(s!=null&&(s.getState()==PlaybackState.STATE_PLAYING||s.getState()==PlaybackState.STATE_BUFFERING))return false;}return true;
+    }
+    static int resume(Context context,List<MediaController> paused,boolean fallback){
+        int count=resume(paused);
+        if(paused.isEmpty()&&fallback){
+            android.media.AudioManager audio=(android.media.AudioManager)context.getSystemService(Context.AUDIO_SERVICE);
+            if(audio!=null){for(int action:new int[]{android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.ACTION_UP})audio.dispatchMediaKeyEvent(new android.view.KeyEvent(action,android.view.KeyEvent.KEYCODE_MEDIA_PLAY));return 1;}
+        }
+        return count;
+    }
+    static boolean local(MediaController controller){
+        MediaController.PlaybackInfo info=controller.getPlaybackInfo();return info!=null&&info.getPlaybackType()==MediaController.PlaybackInfo.PLAYBACK_TYPE_LOCAL;
+    }
     static boolean resumable(List<MediaController> paused){for(MediaController controller:paused){PlaybackState state=controller.getPlaybackState();if(state!=null&&state.getState()==PlaybackState.STATE_PAUSED)return true;}return false;}
     static boolean playing(Context context){
         try{
             MediaSessionManager manager=(MediaSessionManager)context.getSystemService(Context.MEDIA_SESSION_SERVICE);
-            if(manager!=null)for(MediaController c:manager.getActiveSessions(null)){PlaybackState s=c.getPlaybackState();if(s!=null&&s.getState()==PlaybackState.STATE_PLAYING)return true;}
+            if(manager!=null)for(MediaController c:manager.getActiveSessions(null)){PlaybackState s=c.getPlaybackState();if(local(c)&&s!=null&&s.getState()==PlaybackState.STATE_PLAYING)return true;}
         }catch(SecurityException ignored){}return false;
     }
 }

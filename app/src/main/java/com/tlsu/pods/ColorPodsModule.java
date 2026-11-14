@@ -9,6 +9,7 @@ import io.github.libxposed.api.XposedModule;
 public final class ColorPodsModule extends XposedModule {
     private BluetoothBackend backend;
     private volatile boolean managerHooked;
+    private final ThreadLocal<android.bluetooth.BluetoothSocket> readerSocket=new ThreadLocal<>();
 
     void info(String message) { log(Log.INFO, "ColorPods", message); }
     void error(String message, Throwable t) { log(Log.ERROR, "ColorPods", message, t); }
@@ -29,6 +30,23 @@ public final class ColorPodsModule extends XposedModule {
             backend.nativeLoaded = true;
             info("Native module loaded from " + library);
         } catch (Throwable e) { error("Native VendorID module unavailable", e); }
+        try {
+            Class<?> hfp=Class.forName("com.android.bluetooth.hfp.HeadsetNativeInterface",false,param.getClassLoader());
+            // Hook the JNI boundary: ART can inline the public Java wrapper into
+            // already compiled OEM callers, bypassing a hook on that wrapper.
+            hook(Reflect.method(hfp,"atResponseStringNative",String.class,byte[].class)).intercept(chain->{
+                String original=(String)chain.getArg(0);
+                if(!"+XAPL=iPhone,2".equals(original))return chain.proceed();
+                var device=android.bluetooth.BluetoothAdapter.getDefaultAdapter().getRemoteDevice((byte[])chain.getArg(1));
+                String response=HfpCompatibility.response(backend.isAirPods(device),original);
+                if(!java.util.Objects.equals(original,response)){
+                    info("AirPods HFP: disabled legacy battery AT extension; AACP battery retained");
+                    return chain.proceed(new Object[]{response,chain.getArg(1)});
+                }
+                return chain.proceed();
+            });
+            info("AirPods HFP compatibility hook installed");
+        }catch(Throwable e){error("AirPods HFP compatibility hook unavailable",e);}
         try {
             Class<?> stub = Class.forName("android.bluetooth.IOplusBluetooth$Stub", false, param.getClassLoader());
             hook(Reflect.method(stub, "onTransact", int.class, android.os.Parcel.class, android.os.Parcel.class, int.class)).intercept(chain -> {
@@ -75,14 +93,14 @@ public final class ColorPodsModule extends XposedModule {
             var parse = Reflect.method(cls, "parseAirPodsPacket", byte[].class, int.class, android.bluetooth.BluetoothDevice.class);
             hook(parse).intercept(chain -> {
                 // Never consume the original InputStream or change the OEM's parser input.
-                try { backend.packet((byte[]) chain.getArg(0), (int) chain.getArg(1), (android.bluetooth.BluetoothDevice) chain.getArg(2)); }
+                try { backend.packet((byte[]) chain.getArg(0), (int) chain.getArg(1), (android.bluetooth.BluetoothDevice) chain.getArg(2),readerSocket.get()); }
                 catch (Throwable e) { error("Packet observer failed", e); }
                 return chain.proceed();
             });
             hook(Reflect.method(cls,"handleAirPodsSocket",android.bluetooth.BluetoothSocket.class,android.bluetooth.BluetoothDevice.class)).intercept(chain->{
                 var socket=(android.bluetooth.BluetoothSocket)chain.getArg(0);var device=(android.bluetooth.BluetoothDevice)chain.getArg(1);
-                backend.sessionOpened(device,socket);
-                try{return chain.proceed();}finally{backend.sessionClosed(device,socket);}
+                readerSocket.set(socket);backend.sessionOpened(device,socket);
+                try{return chain.proceed();}finally{backend.sessionClosed(device,socket);readerSocket.remove();}
             });
             Class<?> media=Class.forName("com.oplus.bluetooth.feature.airpods.AirPodsMediaController",false,cls.getClassLoader());
             hook(Reflect.method(media,"sendPlay")).intercept(chain->{

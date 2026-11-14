@@ -54,7 +54,10 @@ final class Routing {
     static List<Peer> peerRecords(byte[] data,int n){
         peers(data,n);List<Peer> result=new ArrayList<>();for(int i=0;i<(data[8]&255);i++){int at=9+i*8;result.add(new Peer(mac(data,at,false),data[at+6]&255,data[at+7]&255));}return result;
     }
-    record Message(String sender,String kind,boolean relinquish,boolean reversed,boolean showNearby,Boolean playing,Integer category){}
+    record Message(String sender,String kind,boolean relinquish,boolean reversed,boolean showNearby,Boolean playing,Integer category){
+        boolean decisive(){return Boolean.FALSE.equals(playing)||Boolean.TRUE.equals(playing)&&category!=null&&category>100;}
+        boolean call(){return Boolean.TRUE.equals(playing)&&category!=null&&category>=500;}
+    }
     static Message response(byte[] data,int n){
         if(!header(data,n)||data[4]!=0x11||n<16||data[14]!=1)throw new IllegalArgumentException("Truncated Smart Routing response");
         int size=14+(data[12]&255)+((data[13]&255)<<8);

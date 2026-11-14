@@ -36,11 +36,18 @@ public final class DeviceSmoke extends Instrumentation {
             if(confirmationOnly){testConfirmation(bridge,address,status);return;}
             if(watch>0){
                 Bundle b=BridgeClient.forDevice(address);b.putBoolean("audioState",true);Bundle first=bridge.request(BridgeClient.STATUS,b);
-                emit("Before watch: AACP="+first.getBoolean("controlReady")+" A2DP="+first.getBoolean("audioReady")+" remoteOwner="+first.getBoolean("remoteAudioOwner"));
-                boolean dropped=false;long untilWatch=SystemClock.elapsedRealtime()+Math.min(120,watch)*1000L;
-                while(SystemClock.elapsedRealtime()<untilWatch){Bundle observed=bridge.request(BridgeClient.STATUS,BridgeClient.forDevice(address));if(!observed.getBoolean("controlReady"))dropped=true;SystemClock.sleep(1000);}
-                Bundle end=bridge.request(BridgeClient.STATUS,b);emit("After watch: AACP="+end.getBoolean("controlReady")+" A2DP="+end.getBoolean("audioReady")+" remoteOwner="+end.getBoolean("remoteAudioOwner")+" sawControlDrop="+dropped);
-                if(!end.getBoolean("controlReady"))throw new AssertionError("Control channel unavailable after watch");
+                emit("Before watch: AACP="+first.getBoolean("controlReady")+" A2DP="+first.getBoolean("audioReady")+" remoteOwner="+first.getBoolean("remoteAudioOwner")+" sessions="+first.getInt("controlSessions")+" drops="+first.getInt("controlDrops"));
+                boolean dropped=false;long untilWatch=SystemClock.elapsedRealtime()+Math.min(600,watch)*1000L;int elapsed=0;
+                while(SystemClock.elapsedRealtime()<untilWatch){
+                    Bundle observed=bridge.request(BridgeClient.STATUS,BridgeClient.forDevice(address));
+                    if(!observed.getBoolean("controlReady")||observed.getInt("controlDrops")!=first.getInt("controlDrops")||observed.getInt("controlSessions")!=first.getInt("controlSessions"))dropped=true;
+                    if(elapsed++%10==0)emit("Watch: AACP="+observed.getBoolean("controlReady")+" source="+(observed.getString("selfAddress","").equals(observed.getString("audioSource"))?"local":"peer")+" type="+observed.getInt("audioSourceType")+" phase="+observed.getInt("routePhase")+" sessions="+observed.getInt("controlSessions")+" drops="+observed.getInt("controlDrops"));
+                    SystemClock.sleep(1000);
+                }
+                Bundle end=bridge.request(BridgeClient.STATUS,b);
+                if(end.getInt("controlDrops")!=first.getInt("controlDrops")||end.getInt("controlSessions")!=first.getInt("controlSessions"))dropped=true;
+                emit("After watch: AACP="+end.getBoolean("controlReady")+" A2DP="+end.getBoolean("audioReady")+" remoteOwner="+end.getBoolean("remoteAudioOwner")+" sessions="+end.getInt("controlSessions")+" drops="+end.getInt("controlDrops")+" sawControlDrop="+dropped);
+                if(!end.getBoolean("controlReady")||dropped)throw new AssertionError("Control channel did not remain continuously connected");
                 emit("PASS: observed actual control channel over "+watch+" seconds");return;
             }
             if(handoffTest){testHandoff(bridge,address,status);return;}

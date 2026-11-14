@@ -38,6 +38,8 @@ final class HostPreferences {
     private final Map<String,String> pageTitles=new HashMap<>();
     private final Map<String,Object> pageEntries=new HashMap<>();
     private final HostPageNavigation navigation;
+    private final HostConnection connection;
+    private final Runnable refreshTask=this::refresh;
     private Object statusRow,vendorRow,routeRow,multiRow,autoMediaRow,routeStatus,reverseRow,reconnectRow,transRead,hearingRead,refreshControlsRow,root;
     private Bundle snapshot=Bundle.EMPTY;
     private boolean active,busy;
@@ -51,6 +53,7 @@ final class HostPreferences {
         if(activity==null)throw new IllegalStateException("Host activity unavailable");
         bridge=new BridgeClient(activity);prefClass=Class.forName("androidx.preference.Preference",false,loader);
         navigation=new HostPageNavigation(this,activity,loader,module);
+        connection=new HostConnection(activity,module,this::connectionChanged);
     }
     private Object create(String name) throws Exception {
         Class<?> cls=Class.forName("com.coui.appcompat.preference."+name,true,loader);
@@ -215,18 +218,26 @@ final class HostPreferences {
         Object vm=Reflect.call(activity,"getViewModel",new Class[0]);BluetoothDevice d=(BluetoothDevice)Reflect.call(vm,"getBluetoothDevice",new Class[0]);return d==null?null:d.getAddress();
     }
     private Bundle request(){try{return BridgeClient.forDevice(address());}catch(Exception e){throw new IllegalStateException(e);}}
-    void start(){active=true;main.removeCallbacksAndMessages(null);refresh();}
-    void stop(){active=false;main.removeCallbacksAndMessages(null);}
+    void start(){active=true;main.removeCallbacksAndMessages(null);connection.start();refresh();}
+    void stop(){active=false;connection.stop();main.removeCallbacksAndMessages(null);}
+    void resume(){if(!active)start();main.post(this::connectionChanged);}
+    private void connectionChanged(){
+        if(!alive())return;connection.reconcile();
+        try{update();}catch(Exception e){module.error("COUI connection update failed",e);}
+        main.removeCallbacks(refreshTask);main.postDelayed(refreshTask,100);
+    }
     private boolean alive(){return active&&!activity.isDestroyed()&&!activity.isFinishing();}
     private void onConfirmationDeadline(){if(!alive())return;try{update();}catch(Exception e){module.error("COUI confirmation timeout update failed",e);}}
     private void refresh(){
-        if(!alive())return;if(busy){main.postDelayed(this::refresh,2000);return;}
+        if(!alive())return;connection.reconcile();if(busy){main.postDelayed(refreshTask,2000);return;}
         Bundle b=request();IO.execute(()->{Bundle result=null;String error=null;try{result=bridge.request(BridgeClient.STATUS,b);}catch(Exception e){error=e.getMessage();}
-            Bundle r=result;String message=error;main.post(()->{if(!alive())return;if(r!=null){snapshot=r;connectionError=null;}else connectionError=message;try{update();}catch(Exception e){module.error("COUI update failed",e);}main.postDelayed(this::refresh,2500);});});
+            Bundle r=result;String message=error;main.post(()->{if(!alive())return;if(r!=null){snapshot=r;connectionError=null;}else connectionError=message;try{update();}catch(Exception e){module.error("COUI update failed",e);}main.removeCallbacks(refreshTask);main.postDelayed(refreshTask,2500);});});
     }
     private void update() throws Exception {
-        boolean ready=snapshot.getBoolean("controlReady");long[] identity=snapshot.getLongArray("nativeStatus");
-        String text=ready?"耳机已连接，原生控制通道就绪":snapshot.getBoolean("connected")?"耳机已连接，等待原生控制通道":"等待耳机连接";
+        int link=connection.state();
+        boolean connected=link==ConnectionState.CONNECTED||(link==ConnectionState.UNKNOWN&&snapshot.getBoolean("connected"));
+        boolean ready=link!=ConnectionState.DISCONNECTED&&snapshot.getBoolean("controlReady");long[] identity=snapshot.getLongArray("nativeStatus");
+        String text=ready?"耳机已连接，原生控制通道就绪":connected?"耳机已连接，等待原生控制通道":"等待耳机连接";
         if(!ready&&snapshot.getBoolean("remoteAudioOwner"))text="音频已交给其他设备，控制连接待恢复";
         if(identity!=null)text+="；"+(identity[1]==0?"身份 Hook 未装载":identity[3]>0?"Apple 身份已提交":"身份 Hook 已装载，等待蓝牙重启");
         if(lastError!=null)text+="\n"+lastError;
@@ -281,7 +292,7 @@ final class HostPreferences {
         if(p!=null)for(String peer:p)if(!peer.equals(self)){targets.add(peer);names.add(types.getString(peer,"另一台设备"));}
         entries(routeRow,names.toArray(new String[0]),targets.toArray(new String[0]));enabled(routeRow,multi&&attReady&&!busy&&!targets.isEmpty());
         String source=snapshot.getString("audioSource");boolean otherSource=source!=null&&!source.equals(self)&&targets.contains(source)&&snapshot.getInt("audioSourceType")!=0;
-        String routeText=!snapshot.getBoolean("connected")&&!ready?"耳机未连接":targets.isEmpty()?"已连接此手机":"已发现：此手机、"+String.join("、",names);
+        String routeText=!connected&&!ready?"耳机未连接":targets.isEmpty()?"已连接此手机":"已发现：此手机、"+String.join("、",names);
         routeText+="；音频："+(snapshot.getInt("audioSourceType")==0?"空闲":source!=null&&source.equals(self)?"此手机":types.getString(source,"另一台设备"));
         if(snapshot.getString("routeNotice")!=null)routeText+="\n"+snapshot.getString("routeNotice");summary(routeStatus,routeText);enabled(reverseRow,multi&&attReady&&!busy&&otherSource);
         summary(pageEntries.get("routing"),!multi?"未开启 · 在设备之间切换耳机音频":targets.isEmpty()?"已开启 · 尚未发现其他设备":snapshot.getInt("audioSourceType")==0?"已开启 · 当前无音频播放":"音频来源："+(source!=null&&source.equals(self)?"此手机":types.getString(source,"另一台设备")));

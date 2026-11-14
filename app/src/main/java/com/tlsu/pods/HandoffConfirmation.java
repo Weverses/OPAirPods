@@ -11,6 +11,6 @@ final class HandoffConfirmation {
     static boolean confirmed(long before,long ownerSequence,int owner,long sourceSequence,boolean local,int type,boolean playback){
         boolean remote=sourceSequence>before&&!local&&type!=0;
         boolean owned=owner==1&&ownerSequence>before&&(!remote||ownerSequence>=sourceSequence);
-        return (selected(before,ownerSequence,owner,sourceSequence,local)&&type!=0)||(!playback&&owned);
+        return (selected(before,ownerSequence,owner,sourceSequence,local)&&type==2)||(!playback&&owned);
     }
 }

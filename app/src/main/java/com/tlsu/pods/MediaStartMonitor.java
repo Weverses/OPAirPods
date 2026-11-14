@@ -18,11 +18,12 @@ final class MediaStartMonitor {
     private record Watch(MediaController controller,MediaController.Callback callback){}
     private final Map<MediaSession.Token,Watch> watches=new HashMap<>();
     private final Handler handler=new Handler(Looper.getMainLooper());
-    private final Runnable started,changed;
+    private final java.util.function.Consumer<MediaController> started;
+    private final Runnable changed;
     private Set<Integer> activeUids=Set.of();
     private boolean initialized,sessionsReady,configWarning;
     private final java.util.function.Consumer<String> log;
-    MediaStartMonitor(Context context,int moduleUid,Runnable started,Runnable changed,java.util.function.Consumer<String> log){
+    MediaStartMonitor(Context context,int moduleUid,java.util.function.Consumer<MediaController> started,Runnable changed,java.util.function.Consumer<String> log){
         this.started=started;this.changed=changed;this.log=log;
         MediaSessionManager sessions=(MediaSessionManager)context.getSystemService(Context.MEDIA_SESSION_SERVICE);
         try{if(sessions!=null){sessions.addOnActiveSessionsChangedListener(this::sessions,null,handler);sessions(sessions.getActiveSessions(null));sessionsReady=true;log.accept("Media session monitor ready: "+watches.size()+" sessions");}}catch(SecurityException e){log.accept("Media session monitor unavailable: "+e.getMessage());}
@@ -32,7 +33,7 @@ final class MediaStartMonitor {
             @Override public void onPlaybackConfigChanged(List<AudioPlaybackConfiguration> configs){
                 Set<Integer> now=mediaUids(configs);
                 boolean fresh=initialized&&now.stream().anyMatch(uid->!activeUids.contains(uid)&&uid!=moduleUid&&uid!=android.os.Process.myUid());
-                activeUids=now;initialized=true;if(fresh){log.accept("Local media start: audio configuration");started.run();}changed.run();
+                activeUids=now;initialized=true;if(fresh){log.accept("Local media start: audio configuration");started.accept(null);}changed.run();
             }
         },handler);
     }
@@ -40,13 +41,13 @@ final class MediaStartMonitor {
         if(controllers==null)controllers=List.of();Set<MediaSession.Token> present=new HashSet<>();for(var c:controllers)present.add(c.getSessionToken());
         for(var iterator=watches.entrySet().iterator();iterator.hasNext();){var entry=iterator.next();if(!present.contains(entry.getKey())){entry.getValue().controller().unregisterCallback(entry.getValue().callback());iterator.remove();}}
         for(MediaController controller:controllers){
-            if(watches.containsKey(controller.getSessionToken())||controller.getPackageName().equals("com.tlsu.pods"))continue;
+            if(watches.containsKey(controller.getSessionToken())||controller.getPackageName().equals("com.tlsu.pods")||!MediaPlayback.local(controller))continue;
             MediaController.Callback callback=new MediaController.Callback(){
                 private boolean playing=isPlaying(controller.getPlaybackState());
-                @Override public void onPlaybackStateChanged(PlaybackState state){boolean now=isPlaying(state);boolean fresh=now&&!playing;if(playing&&!now)log.accept("Local media stopped: session "+controller.getPackageName()+" state="+(state==null?-1:state.getState()));playing=now;if(fresh){log.accept("Local media start: session "+controller.getPackageName());started.run();}changed.run();}
+                @Override public void onPlaybackStateChanged(PlaybackState state){boolean now=isPlaying(state);boolean fresh=now&&!playing;if(playing&&!now)log.accept("Local media stopped: session "+controller.getPackageName()+" state="+(state==null?-1:state.getState()));playing=now;if(fresh){log.accept("Local media start: session "+controller.getPackageName());started.accept(controller);}changed.run();}
             };
             watches.put(controller.getSessionToken(),new Watch(controller,callback));controller.registerCallback(callback,handler);
-            if(sessionsReady&&isPlaying(controller.getPlaybackState())){log.accept("Local media start: new playing session "+controller.getPackageName());started.run();changed.run();}
+            if(sessionsReady&&isPlaying(controller.getPlaybackState())){log.accept("Local media start: new playing session "+controller.getPackageName());started.accept(controller);changed.run();}
         }
     }
     private Set<Integer> mediaUids(List<AudioPlaybackConfiguration> configs){

@@ -33,4 +33,28 @@ public class HandoffStateTest {
         assertEquals(1,s.recovery("earbuds"));assertEquals(2,s.recovery("earbuds"));assertEquals(3,s.recovery("earbuds"));assertEquals(0,s.recovery("earbuds"));
         s.local("earbuds");assertEquals(0,s.recovery("earbuds"));s.remote("earbuds");assertEquals(1,s.recovery("earbuds"));
     }
+    @Test public void aNewPeerYieldCancelsEvenAnUnselectedClaim(){
+        HandoffState s=new HandoffState();var claim=s.beginClaim("buds");
+        var remote=s.requestRemote("buds");assertFalse(s.claiming(claim));assertTrue(s.current(remote));
+        assertNull(s.finishClaim(claim,true));assertTrue(s.remoteOwns("buds"));
+    }
+    @Test public void oldSourceSnapshotIsDifferentFromANewHandoffAfterSelection(){
+        HandoffState s=new HandoffState();var claim=s.beginClaim("buds");
+        assertNull(s.source("buds",false,2));assertTrue(s.claiming(claim));
+        s.source("buds",true,0);var remote=s.source("buds",false,2);
+        assertNotNull(remote);assertFalse(s.claiming(claim));assertTrue(s.current(remote));
+    }
+    @Test public void ownershipLossAfterLocalSelectionCancelsTheClaim(){
+        HandoffState s=new HandoffState();var claim=s.beginClaim("buds");s.source("buds",true,0);
+        assertNotNull(s.ownership("buds",0));assertFalse(s.claiming(claim));
+    }
+    @Test public void disablingInvalidatesOldWorkWithoutFinishingItsReplacement(){
+        HandoffState s=new HandoffState();s.remote("buds");var old=s.beginClaim("buds");s.cancel("buds");
+        assertFalse(s.claiming(old));assertTrue(s.remoteOwns("buds"));var next=s.beginClaim("buds");
+        assertNull(s.finishClaim(old,false));assertTrue(s.claiming(next));
+    }
+    @Test public void anOwnershipAckAloneCannotEraseAnObservedRemoteSource(){
+        HandoffState s=new HandoffState();s.remote("buds");s.ownership("buds",1);
+        assertTrue(s.remoteOwns("buds"));s.source("buds",true,2);assertFalse(s.remoteOwns("buds"));
+    }
 }

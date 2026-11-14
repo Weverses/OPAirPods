@@ -18,4 +18,8 @@ public class HandoffConfirmationTest {
         assertFalse(HandoffConfirmation.confirmed(10,14,0,13,true,2,true));
         assertTrue(HandoffConfirmation.selected(10,14,0,15,true));
     }
+    @Test public void aPhoneCallDoesNotConfirmAMusicTakeover(){
+        assertFalse(HandoffConfirmation.confirmed(10,11,1,12,true,1,true));
+        assertTrue(HandoffConfirmation.confirmed(10,11,1,12,true,2,true));
+    }
 }
