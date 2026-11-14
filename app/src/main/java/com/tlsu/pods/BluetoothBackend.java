@@ -25,7 +25,8 @@ final class BluetoothBackend extends Binder {
     private final Object controlsLock = new Object(), commandLock = new Object();
     private record Control(byte[] value, long received) {}
     private final Map<String, Map<Integer, Control>> states = new ConcurrentHashMap<>();
-    private final Map<String, Map<Integer, byte[]>> pending = new ConcurrentHashMap<>();
+    private final Map<String, Map<Integer, ControlWrite>> controlWrites = new ConcurrentHashMap<>();
+    private final Map<String,ControlWrite> controlRefreshes=new ConcurrentHashMap<>();
     private final Map<String, AttChannel> channels = new ConcurrentHashMap<>();
     private final Map<String, java.util.List<String>> peers = new ConcurrentHashMap<>();
     private final Map<String, java.util.List<Routing.Peer>> peerRecords=new ConcurrentHashMap<>();
@@ -135,7 +136,6 @@ final class BluetoothBackend extends Binder {
         synchronized (controlsLock) {
             states.computeIfAbsent(device.getAddress(), k -> new ConcurrentHashMap<>())
                 .put(command, new Control(Arrays.copyOfRange(bytes, 7, 11), ++sequence));
-            pending.getOrDefault(device.getAddress(),java.util.Collections.emptyMap()).remove(command);
             controlsLock.notifyAll();
         }
         if(command==6){
@@ -219,8 +219,7 @@ final class BluetoothBackend extends Binder {
     synchronized void disconnected(BluetoothDevice device) {
         if (device == null) return;
         BluetoothSocket ended=sessions.remove(device.getAddress());if(ended!=null)validated.remove(ended);handoff.disconnected(device.getAddress());
-        states.remove(device.getAddress());
-        pending.remove(device.getAddress());
+        synchronized(controlsLock){states.remove(device.getAddress());controlWrites.remove(device.getAddress());controlRefreshes.remove(device.getAddress());}
         requested.remove(device.getAddress());
         validationClaims.remove(device.getAddress());mediaReported.remove(device.getAddress());openedAt.remove(device.getAddress());peers.remove(device.getAddress());peerRecords.remove(device.getAddress());sourceSequences.remove(device.getAddress()); audioSources.remove(device.getAddress());
         sourceTypes.remove(device.getAddress());peerTypes.remove(device.getAddress());routeNotices.remove(device.getAddress());announced.removeIf(key->key.startsWith(device.getAddress()+"/"));
@@ -243,35 +242,58 @@ final class BluetoothBackend extends Binder {
         module.info("AACP write command="+Integer.toHexString(command)+" value="+Protocol.hex(value,0,value.length));
         synchronized (commandLock) {
             BluetoothSocket socket = socket(device);
-            long before;
-            synchronized (controlsLock) { before = sequence; }
             Handler worker = (Handler) Reflect.field(manager, "mWorkerHandler");
             if (worker == null) throw new IOException("原生工作线程不可用");
-            java.util.concurrent.CompletableFuture<Void> written = new java.util.concurrent.CompletableFuture<>();
+            java.util.concurrent.CompletableFuture<ControlWrite> written = new java.util.concurrent.CompletableFuture<>();
             if (!worker.post(() -> {
                 try {
                     if (written.isCancelled()) return;
-                    if (!socket.isConnected()) throw new IOException("耳机已断开");
+                    if (socket(device)!=socket) throw new IOException("耳机连接已变化，请重试");
+                    long before;Map<Integer,ControlWrite> writes;
+                    synchronized(controlsLock){before=sequence;writes=controlWrites.computeIfAbsent(device.getAddress(),k->new ConcurrentHashMap<>());}
                     OutputStream output = socket.getOutputStream();
                     synchronized (output) { output.write(packet); output.flush(); }
-                    pending.computeIfAbsent(device.getAddress(),k->new ConcurrentHashMap<>()).put(command,value.clone());
-                    written.complete(null);
+                    ControlWrite update=new ControlWrite(value,before,SystemClock.elapsedRealtime());
+                    synchronized(controlsLock){
+                        // A late completion from a closed session must not enter
+                        // the replacement session. A report arriving during flush
+                        // is already in states and can still confirm this write.
+                        if(controlWrites.get(device.getAddress())!=writes||socket(device)!=socket)
+                            throw new IOException("耳机连接已变化，设置结果未确认");
+                        writes.put(command,update);
+                    }
+                    written.complete(update);
                 } catch (Exception e) { written.completeExceptionally(e); }
             })) throw new IOException("原生工作线程已停止");
-            try { written.get(2, java.util.concurrent.TimeUnit.SECONDS); }
+            ControlWrite update;
+            try { update=written.get(2, java.util.concurrent.TimeUnit.SECONDS); }
             catch (java.util.concurrent.TimeoutException e) { written.cancel(false); throw new IOException("原生发送队列繁忙，已取消未发送的操作",e); }
-            long deadline = SystemClock.elapsedRealtime() + 800;
+            refreshAfterControl(device,socket,worker,update);
             synchronized (controlsLock) {
-                while (SystemClock.elapsedRealtime() < deadline) {
-                    Control observed = states.getOrDefault(device.getAddress(), Map.of()).get(command);
-                    if (observed != null && observed.received > before && Protocol.matches(observed.value, value)) {pending.getOrDefault(device.getAddress(),java.util.Collections.emptyMap()).remove(command);return true;}
-                    controlsLock.wait(Math.max(1, deadline - SystemClock.elapsedRealtime()));
-                }
+                Control observed=states.getOrDefault(device.getAddress(),Map.of()).get(command);
+                return update.state(observed==null?null:observed.value,observed==null?0:observed.received,SystemClock.elapsedRealtime())==ControlWrite.CONFIRMED;
             }
-            // AACP settings do not reliably echo to the sender. Preserve the
-            // reported state and expose a separate pending value, never a fake ACK.
-            return false;
         }
+    }
+    private void refreshAfterControl(BluetoothDevice device,BluetoothSocket expected,Handler worker,ControlWrite latest){
+        String address=device.getAddress();controlRefreshes.put(address,latest);
+        worker.postDelayed(()->{
+            synchronized(controlsLock){
+                // Coalesce a burst of setting changes into one refresh, scoped
+                // to the same connection. Confirmation never blocks a writer.
+                if(!controlRefreshes.remove(address,latest))return;
+                Map<Integer,Control> observed=states.getOrDefault(address,Map.of());boolean waiting=false;
+                for(var e:controlWrites.getOrDefault(address,Map.of()).entrySet()){
+                    Control state=observed.get(e.getKey());
+                    if(e.getValue().state(state==null?null:state.value,state==null?0:state.received,SystemClock.elapsedRealtime())==ControlWrite.WAITING){waiting=true;break;}
+                }
+                if(!waiting)return;
+            }
+            try{
+                if(socket(device)!=expected)return;
+                OutputStream output=expected.getOutputStream();synchronized(output){output.write(Protocol.requestState());output.flush();}
+            }catch(Exception e){module.info("AACP background state refresh unavailable: "+e.getMessage());}
+        },800);
     }
     private boolean multiActive(){
         if(context==null||!nativeLoaded||!context.getSharedPreferences("colorpods",0).getBoolean("multipoint",true))return false;
@@ -324,6 +346,7 @@ final class BluetoothBackend extends Binder {
     }
     private Bundle status(String address) {
         Bundle result = new Bundle(); result.putBoolean("manager", manager != null);
+        result.putInt("controlConfirmationVersion",1);
         result.putBoolean("native", nativeLoaded);
         if (nativeLoaded) result.putLongArray("nativeStatus", NativeBridge.status());
         result.putBoolean("multipoint",context!=null&&context.getSharedPreferences("colorpods",0).getBoolean("multipoint",true));
@@ -333,10 +356,19 @@ final class BluetoothBackend extends Binder {
             try { result.putBoolean("connected", Boolean.TRUE.equals(Reflect.call(device, "isConnected", new Class[0]))); } catch (Exception ignored) {}
             try { socket(device); result.putBoolean("connected", true); result.putBoolean("controlReady", true); if(requested.add(address))requestState(device,100); }
             catch (Exception e) { result.putString("channelDetail", e.getMessage());BluetoothSocket previous=sessions.get(address);if(previous!=null)sessionClosed(device,previous); }
-            Bundle controls = new Bundle();
-            for (var e : states.getOrDefault(address, Map.of()).entrySet()) controls.putByteArray(Integer.toHexString(e.getKey()), e.getValue().value.clone());
-            result.putBundle("controls", controls);
-            Bundle unconfirmed=new Bundle();for(var e:pending.getOrDefault(address,Map.of()).entrySet())unconfirmed.putByteArray(Integer.toHexString(e.getKey()),e.getValue().clone());result.putBundle("pendingControls",unconfirmed);
+            synchronized(controlsLock){
+                Map<Integer,Control> observed=states.getOrDefault(address,Map.of());
+                Bundle controls=new Bundle(),pending=new Bundle(),updates=new Bundle();
+                for(var e:observed.entrySet())controls.putByteArray(Integer.toHexString(e.getKey()),e.getValue().value.clone());
+                long now=SystemClock.elapsedRealtime();
+                for(var e:controlWrites.getOrDefault(address,Map.of()).entrySet()){
+                    String key=Integer.toHexString(e.getKey());ControlWrite write=e.getValue();Control current=observed.get(e.getKey());
+                    int state=write.state(current==null?null:current.value,current==null?0:current.received,now);
+                    Bundle update=new Bundle();update.putInt("state",state);update.putLong("deadline",write.deadline);update.putByteArray("expected",write.expected());updates.putBundle(key,update);
+                    if(state==ControlWrite.WAITING)pending.putByteArray(key,write.expected());
+                }
+                result.putBundle("controls",controls);result.putBundle("pendingControls",pending);result.putBundle("controlUpdates",updates);
+            }
             result.putStringArray("peers", peers.getOrDefault(address, java.util.List.of()).toArray(new String[0]));
             result.putString("audioSource", audioSources.get(address));
             result.putInt("audioSourceType",sourceTypes.getOrDefault(address,0));
@@ -378,7 +410,10 @@ final class BluetoothBackend extends Binder {
             String address = request.getString("address");
             result = new Bundle();
             switch (code) {
-                case BridgeClient.STATUS -> {result=status(address);if(request.getBoolean("audioState")&&BluetoothAdapter.checkBluetoothAddress(address))result.putBoolean("audioReady",AudioLinks.ready(c,device(address)));}
+                case BridgeClient.STATUS -> {
+                    if(request.getBoolean("refreshControls"))sendFrames(device(address),Protocol.requestState());
+                    result=status(address);if(request.getBoolean("audioState")&&BluetoothAdapter.checkBluetoothAddress(address))result.putBoolean("audioReady",AudioLinks.ready(c,device(address)));
+                }
                 case BridgeClient.VENDOR -> {
                     if (!nativeLoaded) throw new IOException("原生 VendorID Hook 未加载");
                     boolean enable = request.getBoolean("enabled");

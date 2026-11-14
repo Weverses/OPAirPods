@@ -9,12 +9,12 @@ import android.os.SystemClock;
 // Foreground instrumentation avoids ColorOS freezing a background test between
 // a temporary setting change and restoration. No exported debug entry points.
 public final class DeviceSmoke extends Instrumentation {
-    private boolean attOnly,doRouting,handoffTest;
+    private boolean attOnly,doRouting,handoffTest,confirmationOnly;
     private String probe;
     private int watch;
     private final StringBuilder report=new StringBuilder();
     private boolean failed;
-    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);if(arguments!=null){attOnly="true".equals(arguments.getString("attOnly"));doRouting="true".equals(arguments.getString("routing"));probe=arguments.getString("probe");handoffTest="true".equals(arguments.getString("handoff"));watch=Integer.parseInt(arguments.getString("watch","0"));}start();}
+    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);if(arguments!=null){attOnly="true".equals(arguments.getString("attOnly"));doRouting="true".equals(arguments.getString("routing"));probe=arguments.getString("probe");handoffTest="true".equals(arguments.getString("handoff"));confirmationOnly="true".equals(arguments.getString("confirmation"));watch=Integer.parseInt(arguments.getString("watch","0"));}start();}
     private void emit(String value){report.append(value).append('\n');Bundle b=new Bundle();b.putString("stream",value+"\n");sendStatus(0,b);}
     @Override public void onStart(){
         try{
@@ -24,6 +24,7 @@ public final class DeviceSmoke extends Instrumentation {
             while(address==null&&SystemClock.elapsedRealtime()<until){
                 for(var device:BluetoothAdapter.getDefaultAdapter().getBondedDevices())try{
                     Bundle s=bridge.request(BridgeClient.STATUS,BridgeClient.forDevice(device.getAddress()));Bundle c=s.getBundle("controls");
+                    if(confirmationOnly&&s.getInt("controlConfirmationVersion")!=1)throw new AssertionError("New confirmation backend is not loaded");
                     if(s.getBoolean("controlReady")&&c!=null&&c.getByteArray("17")!=null){address=device.getAddress();status=s;break;}
                 }catch(Exception e){error=e.toString();}
                 if(address==null)SystemClock.sleep(250);
@@ -32,6 +33,7 @@ public final class DeviceSmoke extends Instrumentation {
             long[] identity=status.getLongArray("nativeStatus");
             if(identity==null||identity[0]!=1||identity[1]!=1||identity[3]<1)throw new AssertionError("Apple identity not applied");
             emit("PASS: OEM Binder + native AACP channel + Apple SDP identity");
+            if(confirmationOnly){testConfirmation(bridge,address,status);return;}
             if(watch>0){
                 Bundle b=BridgeClient.forDevice(address);b.putBoolean("audioState",true);Bundle first=bridge.request(BridgeClient.STATUS,b);
                 emit("Before watch: AACP="+first.getBoolean("controlReady")+" A2DP="+first.getBoolean("audioReady")+" remoteOwner="+first.getBoolean("remoteAudioOwner"));
@@ -70,6 +72,28 @@ public final class DeviceSmoke extends Instrumentation {
             }
         }catch(Throwable e){failed=true;emit("FAIL: "+e);}
         finally{Bundle result=new Bundle();result.putString("stream",report.toString());finish(failed?Activity.RESULT_CANCELED:Activity.RESULT_OK,result);}
+    }
+    private void testConfirmation(BridgeClient bridge,String address,Bundle status)throws Exception{
+        // A same-value write exercises real delivery and confirmation without
+        // changing the user's selected press speed or needing restoration.
+        byte original=status.getBundle("controls").getByteArray("17")[0];
+        Bundle result=control(bridge,address,original);assertDelivery(result,original);
+        Bundle update=result.getBundle("controlUpdates").getBundle("17");
+        if(update==null)throw new AssertionError("Missing confirmation metadata");
+        emit("After write: state="+update.getInt("state"));
+        long until=update.getLong("deadline")+2000;
+        while(update.getInt("state")==ControlWrite.WAITING&&SystemClock.elapsedRealtime()<until){
+            SystemClock.sleep(250);result=bridge.request(BridgeClient.STATUS,BridgeClient.forDevice(address));
+            Bundle updates=result.getBundle("controlUpdates");update=updates==null?null:updates.getBundle("17");
+            if(update==null)throw new AssertionError("Connection ended during confirmation check");
+        }
+        int state=update.getInt("state");
+        if(state==ControlWrite.WAITING)throw new AssertionError("Confirmation did not leave waiting by its deadline");
+        if(result.getBundle("pendingControls").containsKey("17"))throw new AssertionError("Terminal result still marked pending");
+        if(state==ControlWrite.CONFIRMED&&!Protocol.matches(result.getBundle("controls").getByteArray("17"),new byte[]{original}))throw new AssertionError("Confirmation differs from actual report");
+        emit("PASS: same-value write reached bounded result state="+state+"; pending marker cleared");
+        Bundle refresh=BridgeClient.forDevice(address);refresh.putBoolean("refreshControls",true);
+        bridge.request(BridgeClient.STATUS,refresh);emit("PASS: explicit state refresh accepted on native AACP");
     }
     private void testHandoff(BridgeClient bridge,String address,Bundle status)throws Exception{
         String self=status.getString("selfAddress"),target=null;String[] peers=status.getStringArray("peers");
@@ -121,7 +145,9 @@ public final class DeviceSmoke extends Instrumentation {
     }
     private void assertDelivery(Bundle result,byte expected){
         if(result.getBoolean("controlConfirmed"))return;
-        byte[] pending=result.getBundle("pendingControls").getByteArray("17");if(pending==null||pending[0]!=expected)throw new AssertionError("Unconfirmed state must be separate from reported controls");
+        Bundle updates=result.getBundle("controlUpdates");Bundle update=updates==null?null:updates.getBundle("17");
+        byte[] sent=update==null?null:update.getByteArray("expected");
+        if(sent==null||sent[0]!=expected)throw new AssertionError("Unconfirmed request must be separate from reported controls");
     }
     private Bundle control(BridgeClient client,String address,byte value)throws Exception{Bundle b=BridgeClient.forDevice(address);b.putInt("command",0x17);b.putByteArray("value",new byte[]{value});return client.request(BridgeClient.CONTROL,b);}
     private byte[] read(BridgeClient client,String address,int handle)throws Exception{Bundle b=BridgeClient.forDevice(address);b.putInt("handle",handle);return client.request(BridgeClient.ATT_READ,b).getByteArray("value");}
