@@ -10,6 +10,8 @@ local.properties
 /.workbuddy/
 /docs/dexkit-migration.md
 /docs/dexkit-fingerprint-results.txt
+/docs/game-return.md
+/docs/handoff-notices.md
 
 # macOS metadata
 .DS_Store
