@@ -13,6 +13,11 @@ local.properties
 /docs/game-return.md
 /docs/handoff-notices.md
 /docs/listening-mode-notices.md
+/docs/advanced-controls.md
+/docs/connection-stability.md
+/docs/second-batch-controls.md
+/docs/system-coui-slider.md
+/docs/upstream-pr-analysis.md
 
 # macOS metadata
 .DS_Store
