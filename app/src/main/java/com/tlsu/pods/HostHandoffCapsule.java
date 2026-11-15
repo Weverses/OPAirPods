@@ -8,9 +8,13 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.widget.Toast;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONObject;
@@ -26,6 +30,8 @@ final class HostHandoffCapsule {
     private static final ExecutorService IO=Executors.newSingleThreadExecutor(r->new Thread(r,"ColorPodsCapsule"));
     private static final ExecutorService ROUTES=Executors.newSingleThreadExecutor(r->new Thread(r,"ColorPodsCapsuleRoute"));
     private static final Handler MAIN=new Handler(Looper.getMainLooper());
+    private static final Map<String,HandoffDelivery> deliveries=new HashMap<>();
+    private static final HandoffCardPolicy cardPolicy=new HandoffCardPolicy();
     private static ClassLoader loader;
     private static ColorPodsModule module;
 
@@ -59,7 +65,7 @@ final class HostHandoffCapsule {
         IO.execute(() -> {
             for (String key : new String[]{HostTargets.UI_DEVICE_INFO, HostTargets.UI_MODEL_MAX,
                     HostTargets.UI_MODEL_PRO, HostTargets.UI_CAPSULE_START, HostTargets.UI_CAPSULE_END,
-                    HostTargets.UI_CONNECTION_UPDATE}) {
+                    HostTargets.UI_CONNECTION_UPDATE,CapsuleTargets.SHOWING}) {
                 if (HostTargets.methodOrNull(key, host) == null)
                     owner.info("Handoff capability unavailable: " + key);
                 else owner.info("Handoff capability resolved: " + key);
@@ -100,7 +106,7 @@ final class HostHandoffCapsule {
                     if (!BluetoothAdapter.checkBluetoothAddress(address)) return;
                     Bundle request = BridgeClient.forDevice(address); request.putLong("noticeId", id);
                     Bundle event = new BridgeClient(app).request(BridgeClient.HANDOFF_NOTICE, request);
-                    if (event.getBoolean("available")) MAIN.post(() -> display(address, event));
+                    if (event.getBoolean("available")) MAIN.post(() -> deliver(app,address,event));
                 } catch (Exception e) { module.error("Handoff capsule delivery failed", e); }
                 finally { pending.finish(); }
             });
@@ -132,7 +138,9 @@ final class HostHandoffCapsule {
         String content=(String)Reflect.call(card,"getSubTitle",new Class[0]);
         data.put("primaryInfo",title);data.put("secondaryInfo",content);data.put("capsuleInfoPrimaryText",content);
         data.put("isShowBattery",false);data.put("isCardShowBattery",false);
-        data.put("buttonText","");data.put("isShowButton",false);data.put("isReConnectable",true);
+        Object type=Reflect.call(card,"getCapsuleType",new Class[0]);
+        boolean remote=type==type.getClass().getField("SET_ACTIVE").get(null);
+        data.put("buttonText","");data.put("isShowButton",false);data.put("isReConnectable",remote);
         data.put("progressColor","");data.put("progressBgColor","#33FFFFFF");data.put("themeColor","#FFFFFF");data.put("isLowPower",false);
     }
     private static Object base()throws Exception{
@@ -151,15 +159,28 @@ final class HostHandoffCapsule {
         Object kotlinClass=target(CapsuleTargets.KCLASS).invoke(null,helper);
         return target(CapsuleTargets.GET).invoke(scope,kotlinClass,null,null);
     }
-    private static void display(String address,Bundle event){
+    private static void deliver(Context app,String address,Bundle event){
+        long id=event.getLong("noticeId"),now=SystemClock.elapsedRealtime();
+        HandoffDelivery delivery=deliveries.computeIfAbsent(address,k->new HandoffDelivery());
+        if(delivery.needsAcknowledgement(id,now)){acknowledge(app,address,id,delivery);return;}
+        long attempt=delivery.begin(id,event.getLong("expiresAt"),now);
+        if(attempt==0)return;
+        MAIN.postDelayed(()->hide(PREFIX+address+"/"+id),event.getLong("expiresAt")-now+1);
         try{
             Object helper=helper();
-            if(!event.getBoolean("remote")){hideCurrent(helper,address);return;}
             Object current=currentCard(helper);
-            if(current!=null&&!owned((String)Reflect.call(current,"getDeviceId",new Class[0]))){
-                module.info("Handoff capsule skipped while a native card is active");return;
+            if(current!=null){
+                boolean moduleCard=owned((String)Reflect.call(current,"getDeviceId",new Class[0]));
+                boolean showing=(Boolean)target(CapsuleTargets.SHOWING).invoke(helper);
+                boolean sameDevice=address.equalsIgnoreCase((String)Reflect.call(current,"getMac",new Class[0]));
+                Object currentType=Reflect.call(current,"getCapsuleType",new Class[0]);
+                String kind=(String)Reflect.call(currentType,"getTypeName",new Class[0]);
+                if(cardPolicy.defer(current,showing,moduleCard,sameDevice,kind,SystemClock.elapsedRealtime())){
+                    delivery.finish(id,attempt,false,SystemClock.elapsedRealtime());
+                    module.info("Handoff capsule deferred: id="+id+" showing="+showing+" sameDevice="+sameDevice+" kind="+kind);return;
+                }
+                if(!moduleCard)module.info("Handoff capsule replacing native record: id="+id+" showing="+showing+" sameDevice="+sameDevice+" kind="+kind);
             }
-            String id=PREFIX+address+"/"+event.getLong("noticeId");
             Method lookup=target(HostTargets.UI_DEVICE_INFO);
             var utilsField=HostTargets.fieldOrNull(CapsuleTargets.UTILS,loader);
             if(utilsField==null)throw new NoSuchFieldException("AirPods utility singleton unresolved");
@@ -187,16 +208,52 @@ final class HostHandoffCapsule {
             Class<?> type=Class.forName("com.oplus.mydevices.domain.entities.linkage.CapsuleType",true,loader);
             Class<?> info=Class.forName("com.oplus.mydevices.domain.entities.linkage.CapsuleInfo",true,loader);
             Object card=info.getConstructor(String.class,String.class,String.class,String.class,String.class,String.class,type,String.class,List.class,Integer.class)
-                .newInstance(id,model,address,icon,name,content,type.getField("SET_ACTIVE").get(null),"",List.of(),Integer.valueOf(1));
-            target(HostTargets.UI_CAPSULE_START).invoke(helper,card,null);
+                .newInstance(PREFIX+address+"/"+id,model,address,icon,name,content,type.getField(event.getBoolean("remote")?"SET_ACTIVE":"CONNECTED").get(null),"",List.of(),Integer.valueOf(1));
+            Method start=target(HostTargets.UI_CAPSULE_START);
+            Class<?> callbackType=start.getParameterTypes()[1];
+            // The host forwards the system's asynchronous decision through a
+            // Kotlin Function3. Returning from start() alone proves no delivery.
+            Object callback=Proxy.newProxyInstance(loader,new Class<?>[]{callbackType},(proxy,method,args)->{
+                if(method.getDeclaringClass()==Object.class)return switch(method.getName()){
+                    case "toString" -> "ColorPods handoff callback";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy==args[0];
+                    default -> null;
+                };
+                if(args!=null&&args.length==3&&args[2] instanceof Boolean){
+                    boolean accepted=Boolean.TRUE.equals(args[2]);
+                    MAIN.post(()->{
+                        if(!delivery.finish(id,attempt,accepted,SystemClock.elapsedRealtime()))return;
+                        if(accepted){
+                            module.info("Native handoff capsule accepted: id="+id);
+                            acknowledge(app,address,id,delivery);
+                            MAIN.postDelayed(()->hide(PREFIX+address+"/"+id),event.getBoolean("remote")?8000:4000);
+                        }else{
+                            module.info("Native handoff capsule rejected; will retry: id="+id);
+                            hide(PREFIX+address+"/"+id);
+                        }
+                    });
+                }
+                return null;
+            });
+            start.invoke(helper,card,callback);
             module.info("Native handoff capsule requested: "+content);
-            MAIN.postDelayed(()->hide(id),8000);
-        }catch(Exception e){module.error("Native handoff capsule failed",e);}
+            MAIN.postDelayed(()->{
+                if(delivery.finish(id,attempt,false,SystemClock.elapsedRealtime())){
+                    module.info("Native handoff capsule decision timed out; will retry: id="+id);
+                    hide(PREFIX+address+"/"+id);
+                }
+            },HandoffDelivery.CALLBACK_TIMEOUT_MS);
+        }catch(Exception e){delivery.finish(id,attempt,false,SystemClock.elapsedRealtime());module.error("Native handoff capsule deferred; will retry",e);}
     }
-    private static void hideCurrent(Object helper,String address)throws Exception{
-        Object card=currentCard(helper);if(card==null)return;
-        String id=(String)Reflect.call(card,"getDeviceId",new Class[0]);
-        if(owned(id)&&address.equals(Reflect.call(card,"getMac",new Class[0])))target(HostTargets.UI_CAPSULE_END).invoke(helper);
+    private static void acknowledge(Context app,String address,long id,HandoffDelivery delivery){
+        IO.execute(()->{
+            try{
+                Bundle request=BridgeClient.forDevice(address);request.putLong("noticeId",id);request.putBoolean("acknowledge",true);
+                Bundle result=new BridgeClient(app).request(BridgeClient.HANDOFF_NOTICE,request);
+                MAIN.post(()->{if(result.getBoolean("acknowledged"))delivery.acknowledged(id);else hide(PREFIX+address+"/"+id);});
+            }catch(Exception e){module.error("Handoff capsule acknowledgement failed; will retry",e);}
+        });
     }
     private static void hide(String id){
         try{Object helper=helper(),card=currentCard(helper);

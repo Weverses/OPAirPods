@@ -13,4 +13,10 @@ final class HandoffConfirmation {
         boolean owned=owner==1&&ownerSequence>before&&(!remote||ownerSequence>=sourceSequence);
         return (selected(before,ownerSequence,owner,sourceSequence,local)&&type==2)||(!playback&&owned);
     }
+    /** Live audio needs actual A2DP streaming and fresh local selection. An
+     * unchanged OWN=1 need not be echoed when the phone already owns the route. */
+    static boolean gameRoute(long before,long ownerSequence,int owner,long sourceSequence,boolean local,int type,boolean streamReady,boolean gameActive){
+        return streamReady&&gameActive&&owner==1&&(type==0||type==2)
+                &&selected(before,ownerSequence,owner,sourceSequence,local);
+    }
 }

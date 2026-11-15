@@ -44,6 +44,7 @@ final class HostTargets {
     static final String BT_FACTORY_NEW_INSTANCE = "bt.factory.newInstance";
     static final String BT_STUB_ON_TRANSACT = "bt.stub.onTransact";
     static final String BT_HFP_AT_RESPONSE = "bt.hfp.atResponseStringNative";
+    static final String BT_AVRCP_MEDIA_KEY = "bt.avrcp.sendMediaKeyEvent";
     static final String BT_ENHANCER_CLASS = "bt.enhancer.class";
     static final String BT_ADAPTER_SERVICE_CLASS = "bt.adapterService.class";
     static final String BT_ADAPTER_SERVICE_FIELD = "bt.adapterService.field";
@@ -128,6 +129,7 @@ final class HostTargets {
         directMethod(BT_FACTORY_NEW_INSTANCE, DexKitHost.BLUETOOTH, FACTORY, "newInstance", new String[]{"java.lang.String", "java.lang.String"}, "java.lang.Object", 1);
         directMethod(BT_STUB_ON_TRANSACT, DexKitHost.BLUETOOTH, STUB, "onTransact", new String[]{"int", "android.os.Parcel", "android.os.Parcel", "int"}, "boolean", 0);
         directMethod(BT_HFP_AT_RESPONSE, DexKitHost.BLUETOOTH, HFP, "atResponseStringNative", new String[]{"java.lang.String", "[B"}, "boolean", 0);
+        directMethod(BT_AVRCP_MEDIA_KEY, DexKitHost.BLUETOOTH, "com.android.bluetooth.avrcp.AvrcpNativeInterface", "sendMediaKeyEvent", new String[]{"java.lang.String", "int", "boolean"}, "void", 0);
         directClass(BT_ENHANCER_CLASS, DexKitHost.BLUETOOTH, ENHANCER);
         directClass(BT_ADAPTER_SERVICE_CLASS, DexKitHost.BLUETOOTH, ADAPTER_SERVICE);
         directField(BT_ADAPTER_SERVICE_FIELD, DexKitHost.BLUETOOTH, ADAPTER_SERVICE, "sAdapterService", ADAPTER_SERVICE);

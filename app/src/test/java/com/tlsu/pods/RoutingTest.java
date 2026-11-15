@@ -36,6 +36,13 @@ public class RoutingTest {
         assertFalse(Routing.response(coalesced,coalesced.length).relinquish());
         assertThrows(IllegalArgumentException.class,()->Routing.response(reverse,reverse.length-1));
     }
+    @Test public void anUnknownPeerStreamingStateMustNotPretendToBeAPause(){
+        byte[] body=Opack.encode(java.util.Map.of("hostStreamingState","UNKNOWN"));
+        byte[] packet=java.util.Arrays.copyOf(Routing.mediaInfo("11:22:33:44:55:66","AA:BB:CC:DD:EE:FF"),15+body.length);
+        packet[4]=0x11;packet[12]=(byte)(body.length+1);packet[13]=(byte)((body.length+1)>>8);
+        System.arraycopy(body,0,packet,15,body.length);
+        var message=Routing.response(packet,packet.length);assertNull(message.playing());assertFalse(message.decisive());
+    }
     @Test public void framesHaveUpstreamSizesAndTargetByteOrder() {
         String self="11:22:33:44:55:66",peer="AA:BB:CC:DD:EE:FF";
         assertEquals(96,Routing.introduce(self,peer).length);

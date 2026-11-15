@@ -73,7 +73,7 @@ final class Routing {
         var values=Opack.decode(java.util.Arrays.copyOfRange(data,15,size));String name=String.valueOf(values.getOrDefault("btName",""));
         String kind=null;for(String candidate:new String[]{"iPad","Mac","iPhone","Linux","Android"})if(name.contains(candidate)){kind=candidate;break;}
         Object streaming=values.get("hostStreamingState"),category=values.get("otherDeviceAudioCategory");
-        Boolean playing=streaming instanceof String?"YES".equals(streaming):null;
+        Boolean playing="YES".equals(streaming)?Boolean.TRUE:"NO".equals(streaming)?Boolean.FALSE:null;
         return new Message(mac(data,6,true),kind,Boolean.TRUE.equals(values.get("audioRoutingSetOwnershipToFalse")),"ReverseBannerTapped".equals(values.get("reason")),Boolean.TRUE.equals(values.get("SmartRoutingKeyShowNearbyUI")),playing,category instanceof Number?((Number)category).intValue():null);
     }
 }

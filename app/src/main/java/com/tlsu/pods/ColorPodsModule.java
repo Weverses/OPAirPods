@@ -59,6 +59,13 @@ public final class ColorPodsModule extends XposedModule {
             return chain.proceed();
         });
 
+        // JNI callback: catch route-generated PLAY before the OEM AVRCP path
+        // can dispatch it to an unrelated addressed/background media session.
+        hookTarget(HostTargets.BT_AVRCP_MEDIA_KEY, loader, chain -> {
+            if(backend.suppressGamePlay((String)chain.getArg(0),(int)chain.getArg(1),(boolean)chain.getArg(2)))return null;
+            return chain.proceed();
+        });
+
         hookTarget(HostTargets.BT_STUB_ON_TRANSACT, loader, chain -> {
             int code = (int) chain.getArg(0) - BridgeClient.TRANSACTION_BASE;
             if (code < BridgeClient.STATUS || code > BridgeClient.HANDOFF_NOTICE)
@@ -146,7 +153,7 @@ public final class ColorPodsModule extends XposedModule {
         });
         hookTarget(HostTargets.EXT_MEDIA_SEND_PLAY, host, chain -> {
             if (backend.suppressAutomaticPlay()) {
-                info("Deferred OEM ear-detection autoplay while another device owns audio");
+                info("Deferred OEM ear-detection autoplay during remote audio or game handoff");
                 return null;
             }
             return chain.proceed();

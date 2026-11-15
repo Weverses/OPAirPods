@@ -25,7 +25,7 @@ final class MediaPlayback {
                 }
             }
         }catch(SecurityException ignored){}
-        if(paused.isEmpty()){
+        if(paused.isEmpty()&&preferred==null){
             android.media.AudioManager audio=(android.media.AudioManager)context.getSystemService(Context.AUDIO_SERVICE);
             if(audio!=null)for(int action:new int[]{android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.ACTION_UP})audio.dispatchMediaKeyEvent(new android.view.KeyEvent(action,android.view.KeyEvent.KEYCODE_MEDIA_PAUSE));
         }
@@ -47,14 +47,6 @@ final class MediaPlayback {
     static void pauseAgain(Context context,List<MediaController> controllers){
         if(controllers.isEmpty()){pause(context);return;}
         for(MediaController c:controllers)if(local(c))c.getTransportControls().pause();
-    }
-    static int resume(Context context,List<MediaController> paused,boolean fallback){
-        int count=resume(paused);
-        if(paused.isEmpty()&&fallback){
-            android.media.AudioManager audio=(android.media.AudioManager)context.getSystemService(Context.AUDIO_SERVICE);
-            if(audio!=null){for(int action:new int[]{android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.ACTION_UP})audio.dispatchMediaKeyEvent(new android.view.KeyEvent(action,android.view.KeyEvent.KEYCODE_MEDIA_PLAY));return 1;}
-        }
-        return count;
     }
     static boolean local(MediaController controller){
         MediaController.PlaybackInfo info=controller.getPlaybackInfo();return info!=null&&info.getPlaybackType()==MediaController.PlaybackInfo.PLAYBACK_TYPE_LOCAL;

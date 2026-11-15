@@ -8,18 +8,33 @@ import android.os.SystemClock;
 // Run while the device is awake; ColorOS may freeze background instrumentation.
 public final class DeviceSmoke extends Instrumentation {
     private boolean attOnly,doRouting,handoffTest,confirmationOnly,automatic,statusOnly;
-    private String probe;
+    private String probe,gameReturnSetting;
     private int watch;
+    private int expectedNoticeVersion;
     private final StringBuilder report=new StringBuilder();
     private boolean failed;
-    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);if(arguments!=null){statusOnly="true".equals(arguments.getString("statusOnly"));attOnly="true".equals(arguments.getString("attOnly"));doRouting="true".equals(arguments.getString("routing"));automatic="true".equals(arguments.getString("automatic"));probe=arguments.getString("probe");handoffTest="true".equals(arguments.getString("handoff"));confirmationOnly="true".equals(arguments.getString("confirmation"));watch=Integer.parseInt(arguments.getString("watch","0"));}start();}
+    private boolean gameRoute;
+    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);if(arguments!=null){statusOnly="true".equals(arguments.getString("statusOnly"));attOnly="true".equals(arguments.getString("attOnly"));doRouting="true".equals(arguments.getString("routing"));automatic="true".equals(arguments.getString("automatic"));probe=arguments.getString("probe");gameReturnSetting=arguments.getString("gameReturnSetting");handoffTest="true".equals(arguments.getString("handoff"));confirmationOnly="true".equals(arguments.getString("confirmation"));expectedNoticeVersion=Integer.parseInt(arguments.getString("noticeVersion","0"));watch=Integer.parseInt(arguments.getString("watch","0"));gameRoute="true".equals(arguments.getString("gameRoute"));}start();}
     private void emit(String value){report.append(value).append('\n');Bundle b=new Bundle();b.putString("stream",value+"\n");sendStatus(0,b);}
     @Override public void onStart(){
         try{
             BridgeClient bridge=new BridgeClient(getTargetContext());String address=null;Bundle status=null;String error="";long until=SystemClock.elapsedRealtime()+30_000;
             if(statusOnly){
-                Bundle base=bridge.request(BridgeClient.STATUS,new Bundle());
-                emit("PASS: Binder status response: manager="+base.getBoolean("manager")+" native="+base.getBoolean("native"));
+                Bundle diagnostic=new Bundle();diagnostic.putBoolean("gameState",true);
+                Bundle base=bridge.request(BridgeClient.STATUS,diagnostic);
+                emit("PASS: Binder status response: manager="+base.getBoolean("manager")+" native="+base.getBoolean("native")+" noticeVersion="+base.getInt("handoffNoticeVersion"));
+                emit("Game return: version="+base.getInt("gameReturnVersion")+" enabled="+base.getBoolean("autoGameReturn")
+                        +" foreground="+base.getBoolean("foregroundGame")+" players="+base.getInt("gamePlayers")
+                        +" package="+base.getString("gamePackage","")+" detectionError="+base.getBoolean("gameDetectionError"));
+                if(gameReturnSetting!=null){
+                    if(base.getInt("gameReturnVersion")<1)throw new AssertionError("Game return backend is not loaded");
+                    if(!gameReturnSetting.equals("true")&&!gameReturnSetting.equals("false"))throw new IllegalArgumentException("Expected boolean gameReturnSetting");
+                    boolean enabled=Boolean.parseBoolean(gameReturnSetting);Bundle setting=new Bundle();setting.putBoolean("autoGameReturn",enabled);
+                    Bundle saved=bridge.request(BridgeClient.MULTIPOINT,setting);
+                    if(saved.getBoolean("autoGameReturn")!=enabled||saved.getBoolean("autoMedia")!=base.getBoolean("autoMedia"))throw new AssertionError("Game return setting did not persist independently");
+                    emit("PASS: game return setting persisted independently: "+enabled);
+                }
+                if(expectedNoticeVersion>0&&base.getInt("handoffNoticeVersion")!=expectedNoticeVersion)throw new AssertionError("Expected handoff notice backend version "+expectedNoticeVersion);
                 boolean ready=false;
                 for(var device:BluetoothAdapter.getDefaultAdapter().getBondedDevices()){
                     Bundle state=bridge.request(BridgeClient.STATUS,BridgeClient.forDevice(device.getAddress()));
@@ -27,11 +42,12 @@ public final class DeviceSmoke extends Instrumentation {
                     emit("Device status: controlReady="+state.getBoolean("controlReady")+" connected="+state.getBoolean("connected")
                             +" acl="+Reflect.call(device,"isConnected",new Class[0])+" controls="+(values==null?0:values.size())
                             +" detail="+state.getString("channelDetail","none"));
+                    emit("Game return candidate: pending="+state.getBoolean("gameReturnPending")+" returning="+state.getBoolean("gameReturning"));
                     ready|=state.getBoolean("controlReady");
                     if(state.getBoolean("controlReady"))emit("Ready device: "+device.getAddress());
                 }
                 if(!ready)throw new AssertionError("No connected OEM control channel");
-                emit("PASS: native control channel available; no settings or routing writes");return;
+                emit(gameReturnSetting==null?"PASS: native control channel available; no settings or routing writes":"PASS: native control channel available; game return setting verified; no routing writes");return;
             }
             emit("Waiting for OEM AirPods channel and initial settings");
             while(address==null&&SystemClock.elapsedRealtime()<until){
@@ -47,6 +63,13 @@ public final class DeviceSmoke extends Instrumentation {
             long[] identity=status.getLongArray("nativeStatus");
             if(identity==null||identity[0]!=1||identity[1]!=1||identity[3]<1)throw new AssertionError("Apple identity not applied");
             emit("PASS: OEM Binder + native AACP channel + Apple SDP identity");
+            if(gameRoute){
+                Bundle diagnostic=new Bundle();diagnostic.putBoolean("gameState",true);Bundle base=bridge.request(BridgeClient.STATUS,diagnostic);
+                if(base.getInt("gameReturnVersion")<5||!base.getBoolean("foregroundGame"))throw new AssertionError("Streaming-aware backend and audible foreground game required");
+                Bundle result=bridge.request(BridgeClient.ROUTE,BridgeClient.forDevice(address));
+                if(!result.getBoolean("routeConfirmed")||!result.getBoolean("routeOnly")||!result.getBoolean("audioStreaming"))throw new AssertionError("Game route did not confirm actual A2DP streaming");
+                emit("PASS: foreground game route restored actual A2DP streaming without player commands");return;
+            }
             if(confirmationOnly){testConfirmation(bridge,address,status);return;}
             if(watch>0){
                 Bundle b=BridgeClient.forDevice(address);b.putBoolean("audioState",true);Bundle first=bridge.request(BridgeClient.STATUS,b);

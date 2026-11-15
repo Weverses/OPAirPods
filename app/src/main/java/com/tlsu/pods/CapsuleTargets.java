@@ -16,7 +16,7 @@ import static com.tlsu.pods.DexQueries.*;
 final class CapsuleTargets {
     static final String APPLICATION="ui.capsule.application", BASE="ui.capsule.baseSingleton";
     static final String REGISTRY="ui.capsule.scopeRegistry", ROOT="ui.capsule.rootScope", GET="ui.capsule.resolveDependency";
-    static final String KCLASS="ui.capsule.kotlinClass", CURRENT="ui.capsule.currentCard", UTILS="ui.capsule.utils";
+    static final String KCLASS="ui.capsule.kotlinClass", CURRENT="ui.capsule.currentCard", SHOWING="ui.capsule.isShowing", UTILS="ui.capsule.utils";
     private static final String BASE_CLASS="com.heytap.mydevices.common.BaseApplication";
     private static final String HELPER="com.heytap.mydevices.core.seedling.SeedlingCardHelper";
     private static final String INFO="com.oplus.mydevices.domain.entities.linkage.CapsuleInfo", SCOPE="org.koin.core.scope.Scope";
@@ -50,6 +50,11 @@ final class CapsuleTargets {
             MethodData end=one(methods(b,new MethodMatcher().declaredClass(HELPER).paramTypes().returnType("void").usingEqStrings("sendEndSeedling")));
             var field=oneField(fields(end,HELPER,INFO,false));
             return filter(field.getReaders(),m -> shape(m,HELPER,INFO));
+        });
+        HostTargets.fingerprintMethod(SHOWING,new String[]{},"boolean",b -> {
+            MethodData end=one(methods(b,new MethodMatcher().declaredClass(HELPER).paramTypes().returnType("void").usingEqStrings("sendEndSeedling")));
+            var field=oneField(fields(end,HELPER,"boolean",false));
+            return filter(field.getReaders(),m -> shape(m,HELPER,"boolean"));
         });
         HostTargets.fingerprintField(UTILS,null,b -> {
             var hits=HostTargets.fingerprintMatches(HostTargets.UI_DEVICE_INFO,b);

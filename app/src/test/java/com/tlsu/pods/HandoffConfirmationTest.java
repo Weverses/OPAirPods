@@ -22,4 +22,28 @@ public class HandoffConfirmationTest {
         assertFalse(HandoffConfirmation.confirmed(10,11,1,12,true,1,true));
         assertTrue(HandoffConfirmation.confirmed(10,11,1,12,true,2,true));
     }
+    @Test public void aContinuousGameCanCompleteOnFreshLocalSelectionWithoutStartingAMusicPlayer(){
+        assertTrue(HandoffConfirmation.gameRoute(10,11,1,12,true,0,true,true));
+        assertFalse(HandoffConfirmation.confirmed(10,11,1,12,true,0,true));
+    }
+    @Test public void gameRouteRequiresFreshLocalSelectionAndKnownLocalOwnership(){
+        assertFalse(HandoffConfirmation.gameRoute(10,11,1,9,true,0,true,true));
+        assertTrue(HandoffConfirmation.gameRoute(10,9,1,12,true,0,true,true));
+        assertFalse(HandoffConfirmation.gameRoute(10,11,1,12,false,0,true,true));
+        assertFalse(HandoffConfirmation.gameRoute(10,13,0,12,true,0,true,true));
+    }
+    @Test public void alreadyOwnedGameStillNeedsFreshSelectionAndRealStreaming(){
+        assertFalse(HandoffConfirmation.gameRoute(10,9,1,9,true,0,true,true));
+        assertFalse(HandoffConfirmation.gameRoute(10,9,1,12,true,0,false,true));
+        assertTrue(HandoffConfirmation.gameRoute(10,9,1,12,true,0,true,true));
+    }
+    @Test public void gameRouteDoesNotCompleteWithoutTheAudioProfileOrOriginalGame(){
+        assertFalse(HandoffConfirmation.gameRoute(10,11,1,12,true,0,false,true));
+        assertFalse(HandoffConfirmation.gameRoute(10,11,1,12,true,0,true,false));
+    }
+    @Test public void aCallOrUnknownAudioCategoryCannotConfirmTheGameRoute(){
+        assertFalse(HandoffConfirmation.gameRoute(10,11,1,12,true,1,true,true));
+        assertFalse(HandoffConfirmation.gameRoute(10,11,1,12,true,3,true,true));
+        assertTrue(HandoffConfirmation.gameRoute(10,11,1,12,true,2,true,true));
+    }
 }

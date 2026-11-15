@@ -41,6 +41,43 @@ final class AudioLinks {
         if(!accepted)result.completeExceptionally(new IOException("系统音频服务不可用"));
         return result.orTimeout(3,TimeUnit.SECONDS);
     }
+    /** Connected/active does not imply AVDTP is streaming after remote suspend. */
+    static CompletableFuture<Boolean> streaming(Context context,BluetoothDevice device,java.util.function.BooleanSupplier valid){
+        BluetoothAdapter adapter=BluetoothAdapter.getDefaultAdapter();
+        CompletableFuture<Boolean> result=new CompletableFuture<>();
+        boolean accepted=adapter.getProfileProxy(context,new BluetoothProfile.ServiceListener(){
+            @Override public void onServiceConnected(int id,BluetoothProfile proxy){
+                try{
+                    if(result.isDone()||!valid.getAsBoolean())throw new IOException("音频切换已取消");
+                    result.complete(proxy.getConnectionState(device)==BluetoothProfile.STATE_CONNECTED
+                            &&device.equals(Reflect.call(proxy,"getActiveDevice",new Class[0]))
+                            &&Boolean.TRUE.equals(Reflect.call(proxy,"isA2dpPlaying",new Class[]{BluetoothDevice.class},device)));
+                }catch(Exception e){result.completeExceptionally(e);}
+                finally{adapter.closeProfileProxy(id,proxy);}
+            }
+            @Override public void onServiceDisconnected(int id){result.completeExceptionally(new IOException("系统音频服务已断开"));}
+        },BluetoothProfile.A2DP);
+        if(!accepted)result.completeExceptionally(new IOException("系统音频服务不可用"));
+        return result.orTimeout(3,TimeUnit.SECONDS);
+    }
+    /** A running game never stops its AudioTrack, so HAL may retain remote
+     * suspend. A local suspend/resume lets HAL close/restart the transport;
+     * it sends no media keys and changes no player state. */
+    static CompletableFuture<Void> restartStream(Context context,java.util.function.BooleanSupplier valid){
+        CompletableFuture<Void> result=new CompletableFuture<>();
+        android.media.AudioManager audio=context.getSystemService(android.media.AudioManager.class);
+        try{
+            if(audio==null||!valid.getAsBoolean())throw new IOException("音频切换已取消");
+            Reflect.call(audio,"setA2dpSuspended",new Class[]{boolean.class},true);
+            // Always release our temporary suspension, including cancellation.
+            Runnable release=()->{
+                try{Reflect.call(audio,"setA2dpSuspended",new Class[]{boolean.class},false);result.complete(null);}
+                catch(Exception e){result.completeExceptionally(e);}
+            };
+            if(!new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(release,150))release.run();
+        }catch(Exception e){result.completeExceptionally(e);}
+        return result;
+    }
     static void connect(Context context,BluetoothDevice device) throws Exception {
         access(context,device,BluetoothProfile.A2DP,true);
         access(context,device,BluetoothProfile.HEADSET,true);

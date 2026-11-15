@@ -40,7 +40,7 @@ final class HostPreferences {
     private final HostPageNavigation navigation;
     private final HostConnection connection;
     private final Runnable refreshTask=this::refresh;
-    private Object statusRow,vendorRow,routeRow,multiRow,autoMediaRow,routeStatus,reverseRow,reconnectRow,transRead,hearingRead,refreshControlsRow,root;
+    private Object statusRow,vendorRow,routeRow,multiRow,autoMediaRow,autoGameReturnRow,routeStatus,reverseRow,reconnectRow,transRead,hearingRead,refreshControlsRow,root;
     private Bundle snapshot=Bundle.EMPTY;
     private boolean active,busy;
     private String lastError;
@@ -192,6 +192,9 @@ final class HostPreferences {
         change(multiRow,value->{Bundle b=request();b.putBoolean("enabled",(Boolean)value);operation(BridgeClient.MULTIPOINT,b,r->{snapshot=r;});});
         autoMediaRow=add(routing,"COUISwitchPreference","colorpods_auto_media","手机播放时自动切回");
         change(autoMediaRow,value->{Bundle b=request();b.putBoolean("autoMedia",(Boolean)value);operation(BridgeClient.MULTIPOINT,b,r->{snapshot=r;});});
+        autoGameReturnRow=add(routing,"COUISwitchPreference","colorpods_auto_game_return","远端暂停后返回游戏");
+        summary(autoGameReturnRow,"其他设备暂停后，自动切回仍在前台发声的游戏");
+        change(autoGameReturnRow,value->{Bundle b=request();b.putBoolean("autoGameReturn",(Boolean)value);operation(BridgeClient.MULTIPOINT,b,r->{snapshot=r;});});
         routeStatus=add(routing,"COUIPreference","colorpods_route_status","设备与音频来源");targetCall(routeStatus,PreferenceTargets.SELECTABLE,false);
         routeRow=list(routing,"colorpods_route","将音频切回此手机",new String[0],new String[0]);
         change(routeRow,value->route(value.toString(),false));
@@ -302,6 +305,7 @@ final class HostPreferences {
         }
         boolean multi=snapshot.getBoolean("multipoint");checked(multiRow,multi);enabled(multiRow,identity!=null&&!busy);
         checked(autoMediaRow,snapshot.getBoolean("autoMedia",true));enabled(autoMediaRow,multi&&identity!=null&&!busy);
+        checked(autoGameReturnRow,snapshot.getBoolean("autoGameReturn",false));enabled(autoGameReturnRow,multi&&identity!=null&&!busy);
         enabled(reconnectRow,multi&&identity!=null&&identity[0]!=0&&identity[1]!=0&&identity[3]>0&&!ready&&!busy);
         String[] p=snapshot.getStringArray("peers");String self=snapshot.getString("selfAddress");ArrayList<String> targets=new ArrayList<>(),names=new ArrayList<>();Bundle types=snapshot.getBundle("peerTypes");if(types==null)types=Bundle.EMPTY;
         if(p!=null)for(String peer:p)if(!peer.equals(self)){targets.add(peer);names.add(types.getString(peer,"另一台设备"));}
