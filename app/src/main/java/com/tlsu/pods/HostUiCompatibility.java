@@ -12,7 +12,7 @@ final class HostUiCompatibility {
         Class<?> screen = Class.forName("androidx.preference.PreferenceScreen", false, loader);
         for(String key:new String[]{PreferenceTargets.PERSISTENT,PreferenceTargets.VISIBLE,
                 PreferenceTargets.SELECTABLE,PreferenceTargets.ENABLED,PreferenceTargets.CHECKED,
-                PreferenceTargets.NOTIFY,PreferenceTargets.PARENT,PreferenceTargets.CLICK,PreferenceTargets.CHANGE})
+                PreferenceTargets.NOTIFY,PreferenceTargets.PARENT,PreferenceTargets.CLICK,PreferenceTargets.CHANGE,PreferenceTargets.BIND})
             if(HostTargets.methodOrNull(key,loader)==null)throw new NoSuchMethodException("Unresolved host target "+key);
         for(String key:new String[]{HostTargets.UI_PREF_ADD,HostTargets.UI_PREF_FIND,HostTargets.UI_PREF_SUMMARY,HostTargets.UI_PREF_KEY,HostTargets.UI_PREF_TITLE,HostTargets.UI_PREF_CHILD,HostTargets.UI_PREF_COUNT,HostTargets.UI_PREF_ORDER,HostTargets.UI_PREF_REMOVE})
             if(HostTargets.methodOrNull(key,loader)==null)throw new NoSuchMethodException("Unresolved host target "+key);

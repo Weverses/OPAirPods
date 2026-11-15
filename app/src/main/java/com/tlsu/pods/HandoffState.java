@@ -36,5 +36,6 @@ final class HandoffState {
     synchronized boolean preparing(Ticket ticket){return claiming(ticket)&&!state(ticket.address()).armed;}
     synchronized boolean current(Ticket ticket){State s=state(ticket.address());return s.remote&&s.generation==ticket.generation();}
     synchronized boolean remoteOwns(String address){return state(address).remote;}
+    synchronized Ticket recoveryTicket(String address){State s=state(address);return s.remote?new Ticket(address,s.generation):null;}
     synchronized int recovery(String address){State s=state(address);return s.remote&&s.recoveries<3?++s.recoveries:0;}
 }

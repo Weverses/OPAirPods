@@ -68,7 +68,7 @@ public final class ColorPodsModule extends XposedModule {
 
         hookTarget(HostTargets.BT_STUB_ON_TRANSACT, loader, chain -> {
             int code = (int) chain.getArg(0) - BridgeClient.TRANSACTION_BASE;
-            if (code < BridgeClient.STATUS || code > BridgeClient.MODE_NOTICE)
+            if (code < BridgeClient.STATUS || code > BridgeClient.STEM_CONFIG)
                 return chain.proceed();
             Object receiver = chain.getThisObject();
             // The enhancer belongs to the OEM extension jar, which is added
@@ -138,8 +138,14 @@ public final class ColorPodsModule extends XposedModule {
 
         hookTarget(HostTargets.EXT_MANAGER_PARSE, host, chain -> {
             // Never consume the original InputStream or change the OEM parser input.
-            try { backend.packet((byte[]) chain.getArg(0), (int) chain.getArg(1),
-                    (android.bluetooth.BluetoothDevice) chain.getArg(2), readerSocket.get()); }
+            try {
+                byte[] bytes=(byte[])chain.getArg(0);int length=(int)chain.getArg(1);
+                var device=(android.bluetooth.BluetoothDevice)chain.getArg(2);
+                // Only an opted-in, locally handled stem event bypasses OEM
+                // dispatch, so the same press cannot perform two actions.
+                if(backend.stemPacket(bytes,length,device,readerSocket.get()))return null;
+                backend.packet(bytes,length,device,readerSocket.get());
+            }
             catch (Throwable e) { error("Packet observer failed", e); }
             return chain.proceed();
         });

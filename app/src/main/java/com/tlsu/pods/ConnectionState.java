@@ -9,6 +9,10 @@ final class ConnectionState {
         if(Boolean.TRUE.equals(acl)||Integer.valueOf(CONNECTED).equals(a2dp)||Integer.valueOf(CONNECTED).equals(headset))return CONNECTED;
         return Boolean.FALSE.equals(acl)?DISCONNECTED:UNKNOWN;
     }
+    // Only an active user/playback request may page an earbud without proven ACL.
+    static boolean canRecoverControl(boolean activeRequest,Boolean acl){
+        return activeRequest||Boolean.TRUE.equals(acl);
+    }
     static String reconcile(String original,int observed){
         if(observed==CONNECTED)return "STATE_CONNECTED";
         if(observed==DISCONNECTED&&!"STATE_START_BOND".equals(original)&&!"STATE_BONDING".equals(original))return "STATE_DISCONNECTED";

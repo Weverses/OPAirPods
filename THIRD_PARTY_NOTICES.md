@@ -10,6 +10,8 @@ Copyright (C) 2025 LibrePods contributors. GPL-3.0-or-later.
 
 AACP control commands, Classic ATT handle/layout information, and TiPi/Smart Routing frame encodings are derived from LibrePods, particularly `AACPManager.kt`, `ATTManager.kt`, `data/Transparency.kt`, `data/HearingAid.kt`, and `AirPodsService.kt`. ColorPods is distributed with corresponding source and the GPL text in `LICENSE`.
 
+The hardware three-band EQ format and stem event/configuration values also follow `data/CustomEq.kt`, `data/StemAction.kt`, `AACPManager.kt`, and `AirPodsViewModel.kt` at the same reference revision. Native COUI adapters, session guards, and assistant targeting are implemented in this module.
+
 The integration uses independent API102 adapters and the host's original UI/runtime. It does not redistribute the proprietary host APKs.
 
 ## XZ Embedded

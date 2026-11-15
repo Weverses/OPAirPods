@@ -48,6 +48,18 @@ public class ControlWriteTest {
         assertEquals(ControlWrite.DIFFERENT,write.state(new byte[]{1,2,0,0},11,1100));
         assertEquals(ControlWrite.CONFIRMED,write.state(new byte[]{1,1,0,0},12,1200));
     }
+    @Test public void callConfirmationChecksTheActionByteRatherThanOnlyTheZeroPrefix(){
+        ControlWrite write=new ControlWrite(new byte[]{0,3},10,1000);
+        assertEquals(ControlWrite.WAITING,write.state(new byte[]{0,3,0,0},10,1100));
+        assertEquals(ControlWrite.DIFFERENT,write.state(new byte[]{0,2,0,0},11,1200));
+        assertEquals(ControlWrite.CONFIRMED,write.state(new byte[]{0,3,0,0},12,1300));
+    }
+    @Test public void toneVolumeConfirmationIncludesTheFixedSecondByte(){
+        ControlWrite write=new ControlWrite(new byte[]{70,0x50},10,1000);
+        assertEquals(ControlWrite.DIFFERENT,write.state(new byte[]{70,0,0,0},11,1200));
+        assertEquals(ControlWrite.DIFFERENT,write.state(new byte[]{75,0x50,0,0},12,1300));
+        assertEquals(ControlWrite.CONFIRMED,write.state(new byte[]{70,0x50,0,0},13,1400));
+    }
     @Test public void theUiExpiresACachedWaitingSnapshotEvenIfBinderStopsResponding(){
         assertEquals(ControlWrite.UNCONFIRMED,ControlWrite.waitingState(ControlWrite.WAITING,6000,6000));
         for(int state:new int[]{ControlWrite.CONFIRMED,ControlWrite.DIFFERENT,ControlWrite.UNCONFIRMED})

@@ -2,6 +2,17 @@ package com.tlsu.pods;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public class HandoffStateTest {
+    @Test public void aDelayedRecoveryCannotReviveAfterALocalAndRemoteRoundTrip(){
+        HandoffState s=new HandoffState();assertNull(s.recoveryTicket("buds"));
+        s.remote("buds");var old=s.recoveryTicket("buds");assertTrue(s.current(old));
+        s.local("buds");assertNull(s.recoveryTicket("buds"));s.remote("buds");
+        assertFalse(s.current(old));assertTrue(s.current(s.recoveryTicket("buds")));
+    }
+    @Test public void aDelayedRecoveryDoesNotBelongToTheNextConnection(){
+        HandoffState s=new HandoffState();s.remote("buds");var old=s.recoveryTicket("buds");
+        s.disconnected("buds");
+        assertFalse(s.current(old));assertTrue(s.current(s.recoveryTicket("buds")));
+    }
     @Test public void handlesOwnershipLossOnceWithoutTreatingInitialZeroAsAHandoff(){
         HandoffState s=new HandoffState();assertNull(s.ownership("earbuds",0));
         s.ownership("earbuds",1);HandoffState.Ticket ticket=s.ownership("earbuds",0);

@@ -5,6 +5,16 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class ConnectionStateTest {
+    @Test public void backgroundControlRecoveryRequiresProvenAcl(){
+        assertTrue(ConnectionState.canRecoverControl(false,true));
+        assertFalse(ConnectionState.canRecoverControl(false,false));
+        assertFalse(ConnectionState.canRecoverControl(false,null));
+    }
+    @Test public void anActiveTakeoverMayReconnectAnEarbudUsedByAnotherDevice(){
+        assertTrue(ConnectionState.canRecoverControl(true,true));
+        assertTrue(ConnectionState.canRecoverControl(true,false));
+        assertTrue(ConnectionState.canRecoverControl(true,null));
+    }
     @Test public void headsetDisconnectDoesNotHideConnectedMedia(){
         assertEquals(ConnectionState.CONNECTED,ConnectionState.resolve(true,false,2,0));
     }

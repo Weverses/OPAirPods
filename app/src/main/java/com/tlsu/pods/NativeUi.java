@@ -28,6 +28,12 @@ final class NativeUi {
         preferencesFragmentName = HostTargets.memberName(HostTargets.UI_ACTIVITY_PREFERENCES_FRAGMENT, loader);
         if (preferencesFragmentName == null) throw new IllegalStateException("Host preferences fragment accessor unresolved");
 
+        hook(module,loader,PreferenceTargets.BIND,chain->{
+            Object result=chain.proceed();
+            try{SystemSettingsSlider.bind(chain.getThisObject(),chain.getArg(0));}
+            catch(Exception e){module.error("System COUI slider binding failed",e);}
+            return result;
+        });
         // Native observers keep their original preference objects even while
         // another host fragment displays one of the feature pages.
         hook(module, loader, HostTargets.UI_FRAGMENT_FIND_PREFERENCE, chain -> {

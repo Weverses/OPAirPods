@@ -16,10 +16,15 @@ final class PreferenceTargets {
     static final String CHECKED="ui.preference.checked", NOTIFY="ui.preference.notify";
     static final String PARENT="ui.preference.parent", CLICK="ui.preference.clickListener", CHANGE="ui.preference.changeListener";
     static final String ENTRIES="ui.preference.entries", VALUES="ui.preference.entryValues", DIALOG_TITLE="ui.preference.dialogTitle";
+    static final String BIND="ui.preference.bind";
     private static final String PREF="androidx.preference.Preference", LIST="androidx.preference.ListPreference";
     private static final String[] BOOL={"boolean"}, NONE={};
     private PreferenceTargets() {}
     static void register() {
+        HostTargets.fingerprintMethod(BIND,new String[]{null},"void",b -> {
+            MethodData base=one(methods(b,new MethodMatcher().declaredClass(PREF).returnType("void").paramCount(1).usingNumbers(16908310)));
+            return methods(b,new MethodMatcher().declaredClass("com.coui.appcompat.preference.COUIPreference").returnType("void").paramTypes(base.getParamTypeNames().toArray(new String[0])));
+        });
         HostTargets.fingerprintMethod(PERSISTENT, BOOL, "void", b -> {
             MethodData persist=one(methods(b, new MethodMatcher().declaredClass(PREF).paramTypes("boolean").returnType("boolean")
                     .addInvoke(invoke("android.content.SharedPreferences$Editor","putBoolean","android.content.SharedPreferences$Editor","java.lang.String","boolean"))));

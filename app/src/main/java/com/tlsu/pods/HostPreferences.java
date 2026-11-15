@@ -29,7 +29,14 @@ final class HostPreferences {
     private final BridgeClient bridge;
     private final Handler main=new Handler(Looper.getMainLooper());
     private final Runnable confirmationTimeout=this::onConfirmationDeadline;
+    private final Map<Object,SystemSettingsSlider> sliders=new HashMap<>();
     private final Map<Integer,Object> controls=new LinkedHashMap<>();
+    private final Map<Integer,Object> listeningModeRows=new LinkedHashMap<>();
+    private final Map<Integer,Object> stemRows=new LinkedHashMap<>();
+    private final Map<String,Object> eqRows=new LinkedHashMap<>();
+    private Object eqToggle,eqReset;
+    private CustomEq eqSelection;
+    private StemConfig stemSelection;
     private final Map<Integer,byte[]> sendingControls=new HashMap<>();
     private final Map<Object, Boolean> switchRows=new HashMap<>();
     private final Map<String,Object> attRows=new LinkedHashMap<>();
@@ -40,9 +47,13 @@ final class HostPreferences {
     private final HostPageNavigation navigation;
     private final HostConnection connection;
     private final Runnable refreshTask=this::refresh;
-    private Object statusRow,vendorRow,routeRow,multiRow,autoMediaRow,autoGameReturnRow,routeStatus,reverseRow,reconnectRow,transRead,hearingRead,refreshControlsRow,root;
+    private Object vendorRow,routeRow,multiRow,autoMediaRow,autoGameReturnRow,routeStatus,reverseRow,root;
     private Bundle snapshot=Bundle.EMPTY;
-    private boolean active,busy;
+    private boolean active,busy,attLoading,attWasReady;
+    private long nextAttLoad;
+    private int attGeneration;
+    private int listeningMask=-1;
+    private boolean listeningOffAllowed,listeningAdaptiveSupported;
     private String lastError;
     private String connectionError;
 
@@ -108,7 +119,7 @@ final class HostPreferences {
     Object pageScreen(String key){return pages.get(key);}
     String pageTitle(String key){return pageTitles.get(key);}
     private void summary(Object row,String text) throws Exception {targetCall(row,HostTargets.UI_PREF_SUMMARY,text);}
-    private void enabled(Object row,boolean value) throws Exception {targetCall(row,PreferenceTargets.ENABLED,value);}
+    private void enabled(Object row,boolean value) throws Exception {targetCall(row,PreferenceTargets.ENABLED,value);if(sliders.containsKey(row))sliders.get(row).enabled(value);}
     private void checked(Object row,boolean value) throws Exception {targetCall(row,PreferenceTargets.CHECKED,value);}
     private java.lang.reflect.Method listenerSetter(boolean change)throws NoSuchMethodException{
         var method=HostTargets.methodOrNull(change?PreferenceTargets.CHANGE:PreferenceTargets.CLICK,loader);
@@ -127,14 +138,20 @@ final class HostPreferences {
         setter.invoke(row,listener);
     }
     private void change(Object row,java.util.function.Consumer<Object> action) throws Exception {
+        if(sliders.containsKey(row)){sliders.get(row).onChange(value->action.accept(value));return;}
         var setter=listenerSetter(true);Class<?> type=setter.getParameterTypes()[0];Object listener=listener(type,args->{action.accept(args[1]);return false;});
         setter.invoke(row,listener);
     }
     private void controlChange(Object row,int command,java.util.function.Function<Object,byte[]> value) throws Exception {
+        if(sliders.containsKey(row)){sliders.get(row).onChange(progress->sendControl(command,value.apply(progress)));return;}
         // Accept queued selections so the native switch does not undo its
         // checked state after our listener returns. Failed writes refresh it.
         var setter=listenerSetter(true);Class<?> type=setter.getParameterTypes()[0];Object listener=listener(type,args->sendControl(command,value.apply(args[1])));
         setter.invoke(row,listener);
+    }
+    private void featureChange(Object row,java.util.function.Function<Object,Boolean> action)throws Exception{
+        if(sliders.containsKey(row)){sliders.get(row).onChange(value->action.apply(value));return;}
+        var setter=listenerSetter(true);setter.invoke(row,listener(setter.getParameterTypes()[0],args->action.apply(args[1])));
     }
     private void entries(Object row,String[] names,String[] values) throws Exception {
         if(java.util.Arrays.equals((Object[])targetField(PreferenceTargets.ENTRIES).get(row),names)&&java.util.Arrays.equals((Object[])targetField(PreferenceTargets.VALUES).get(row),values))return;
@@ -143,6 +160,12 @@ final class HostPreferences {
     private Object list(Object parent,String key,String title,String[] names,String[] values) throws Exception {
         Object row=add(parent,"COUIListPreference",key,title);entries(row,names,values);
         targetField(PreferenceTargets.DIALOG_TITLE).set(row,title);
+        return row;
+    }
+    private Object slider(Object parent,String key,String title) throws Exception {
+        Object row=add(parent,"COUIPreference",key,title);
+        targetCall(row,PreferenceTargets.SELECTABLE,false);
+        sliders.put(row,new SystemSettingsSlider(activity,row));
         return row;
     }
     void inject() throws Exception {
@@ -155,36 +178,65 @@ final class HostPreferences {
         for(int i=0;i<existing.length;i++){Object row=Reflect.call(fragment,"findPreference",new Class[]{CharSequence.class},existing[i]);if(row!=null)targetCall(row,HostTargets.UI_PREF_ORDER,orders[i]);}
         Object home=category(root,"cat_colorpods_home","耳机功能",0);
         Object listening=page(home,"listening","聆听体验","空间音频、降噪与通透、听力辅助");
-        Object controlsPage=page(home,"controls","耳机操控","佩戴检测、按压与长按、音量滑动");
+        Object controlsPage=page(home,"controls","耳机操控","佩戴检测、按压与长按、提示声音量");
         Object routingPage=page(home,"routing","多设备连接","音频来源与设备切换");
-        Object morePage=page(home,"more","更多设置","麦克风、自动连接与高级设置");
+        Object morePage=page(home,"more","更多设置","通话按键、优化充电与连接设置");
         Object sound=find("cat_airpods_sound_quality");move(sound,listening,0);
         Object settings=find("cat_airpods_settings");move(settings,controlsPage,0);
         if(settings!=null)targetCall(settings,HostTargets.UI_PREF_TITLE,"佩戴检测");
+        Object effects=category(listening,"cat_colorpods_effects","音效",50);
+        Object eqPage=page(effects,"equalizer","三段均衡器","低音、中音与高音");
+        Object equalizer=category(eqPage,"cat_colorpods_eq","三段均衡器",0);
+        eqToggle=add(equalizer,"COUISwitchPreference","colorpods_eq_enabled","自定义均衡器");
+        featureChange(eqToggle,v->changeEq("enabled",(Boolean)v?1:0));
+        String[] bands={"low","mid","high"},bandNames={"低音","中音","高音"};
+        for(int i=0;i<bands.length;i++){
+            String band=bands[i];Object row=slider(equalizer,"colorpods_eq_"+band,bandNames[i]);eqRows.put(band,row);
+            featureChange(row,v->changeEq(band,(Integer)v));
+        }
+        eqReset=add(equalizer,"COUIJumpPreference","colorpods_eq_reset","恢复标准音效");click(eqReset,()->changeEq("reset",0));
         Object experience=category(listening,"cat_colorpods_listening","智能聆听",100);
         move(find("pref_airpods_conversation_aware"),experience,-1);
         controlSwitch(experience,0x26);controlSwitch(experience,0x35);
         Object noise=category(listening,"cat_colorpods_noise","降噪与通透",200);
         controlSwitch(noise,0x1b);controlSwitch(noise,0x34);
-        String[] percent=new String[101],strength=new String[101];for(int i=0;i<=100;i++){percent[i]=i+"%";strength[i]=Integer.toString(100-i);}
-        Object adaptive=list(noise,"colorpods_control_2e","自适应强度",percent,strength);controls.put(0x2e,adaptive);controlChange(adaptive,0x2e,v->new byte[]{(byte)Integer.parseInt(v.toString())});
-        Object transPage=page(noise,"transparency","通透模式定制","自定义通透、声音放大与对话增强");
+        Object adaptive=slider(noise,"colorpods_control_2e","自适应强度");controls.put(0x2e,adaptive);controlChange(adaptive,0x2e,v->new byte[]{(byte)(100-(Integer)v)});
         Object hearingEntry=category(listening,"cat_colorpods_hearing_entry","听力健康",300);
         Object hearingPage=page(hearingEntry,"hearing","听力辅助","大音量降低与助听器");
         Object actions=category(controlsPage,"cat_colorpods_actions","按压与长按",100);
         controlList(actions,0x17,new String[]{"默认","较慢","最慢"},new int[]{0,1,2});
         controlList(actions,0x18,new String[]{"默认","较短","最短"},new int[]{0,1,2});
+        Object modesPage=page(actions,"listening_modes","长按切换模式","至少选择两种聆听模式");
+        controls.put(0x1a,pageEntries.get("listening_modes"));
+        Object modes=category(modesPage,"cat_colorpods_listening_modes","至少选择两种聆听模式",0);
+        for(int bit:new int[]{1,2,4,8}){
+            Object row=add(modes,"COUISwitchPreference","colorpods_listening_mode_"+bit,ListeningModes.name(bit));listeningModeRows.put(bit,row);
+            var setter=listenerSetter(true);
+            setter.invoke(row,listener(setter.getParameterTypes()[0],args->selectListeningMode(bit,(Boolean)args[1])));
+        }
+        Object chime=slider(actions,"colorpods_control_1f","提示声音量");controls.put(0x1f,chime);
+        controlChange(chime,0x1f,v->new byte[]{((Integer)v).byteValue(),0x50});
+        String[] pressNames={"按一下","按两下","按三下","长按"};
+        String[] defaultNames={"播放/暂停","下一首","上一首","切换聆听模式"};
+        for(int side=1;side<=2;side++){
+            int bud=side;
+            Object stemPage=page(actions,side==1?"stem_left":"stem_right",side==1?"左耳柄":"右耳柄","单按、双按、三按与长按");
+            Object stem=category(stemPage,"cat_colorpods_stem_"+side,"按压动作",0);
+            for(int type=0;type<4;type++){
+                int press=type;
+                Object row=list(stem,"colorpods_stem_"+side+"_"+type,pressNames[type],
+                    new String[]{"默认（"+defaultNames[type]+"）","播放/暂停","下一首","上一首","语音助手","切换聆听模式","不执行动作"},new String[]{"0","1","2","3","4","5","6"});
+                stemRows.put(StemConfig.index(side,type),row);featureChange(row,v->changeStem(bud,press,Integer.parseInt(v.toString())));
+            }
+        }
+        Object assistant=add(actions,"COUIJumpPreference","colorpods_assistant_test","测试默认语音助手");
+        click(assistant,()->{try{DefaultAssistant.launch(activity);}catch(Exception e){Toast.makeText(activity,e.getMessage(),Toast.LENGTH_SHORT).show();}});
         Object volume=category(controlsPage,"cat_colorpods_volume","音量滑动",200);
         controlSwitch(volume,0x25);
         controlList(volume,0x23,new String[]{"默认","较长","最长"},new int[]{0,1,2});
-        Object trans=category(transPage,"cat_colorpods_transparency","通透模式定制",0);
-        transRead=add(trans,"COUIJumpPreference","colorpods_read_transparency","读取耳机设置");click(transRead,()->read(AttCodec.TRANSPARENCY));
-        attSwitch(trans,AttCodec.TRANSPARENCY,"enabled","自定义通透");
-        tuningRows(trans,AttCodec.TRANSPARENCY);
         Object hearing=category(hearingPage,"cat_colorpods_hearing","听力辅助",0);
-        hearingRead=add(hearing,"COUIJumpPreference","colorpods_read_hearing","读取耳机设置");click(hearingRead,()->readHearing());
         attSwitch(hearing,AttCodec.LOUD_SOUND,"enabled","降低大音量");
-        Object hearingToggle=add(hearing,"COUISwitchPreference","colorpods_control_2c","助听器");controls.put(0x2c,hearingToggle);switchRows.put(hearingToggle,true);summary(hearingToggle,"开启时停用自定义通透");
+        Object hearingToggle=add(hearing,"COUISwitchPreference","colorpods_control_2c","助听器");controls.put(0x2c,hearingToggle);switchRows.put(hearingToggle,true);
         controlChange(hearingToggle,0x2c,value->new byte[]{1,(byte)((Boolean)value?1:2)});
         tuningRows(hearing,AttCodec.HEARING_AID);
         Object routing=category(routingPage,"cat_colorpods_routing","设备切换",0);
@@ -195,28 +247,33 @@ final class HostPreferences {
         autoGameReturnRow=add(routing,"COUISwitchPreference","colorpods_auto_game_return","远端暂停后返回游戏");
         summary(autoGameReturnRow,"其他设备暂停后，自动切回仍在前台发声的游戏");
         change(autoGameReturnRow,value->{Bundle b=request();b.putBoolean("autoGameReturn",(Boolean)value);operation(BridgeClient.MULTIPOINT,b,r->{snapshot=r;});});
-        routeStatus=add(routing,"COUIPreference","colorpods_route_status","设备与音频来源");targetCall(routeStatus,PreferenceTargets.SELECTABLE,false);
+        routeStatus=add(routing,"COUIPreference","colorpods_route_status","音频流转状态");targetCall(routeStatus,PreferenceTargets.SELECTABLE,false);
         routeRow=list(routing,"colorpods_route","将音频切回此手机",new String[0],new String[0]);
         change(routeRow,value->route(value.toString(),false));
         reverseRow=add(routing,"COUIJumpPreference","colorpods_route_reverse","撤销其他设备的切换");click(reverseRow,()->route(snapshot.getString("audioSource"),true));
         Object connection=category(morePage,"cat_colorpods_connection","通话与连接",0);
         controlList(connection,0x01,new String[]{"自动","始终右侧","始终左侧"},new int[]{0,1,2});controlSwitch(connection,0x20);
-        refreshControlsRow=add(connection,"COUIJumpPreference","colorpods_refresh_controls","刷新耳机状态");
-        click(refreshControlsRow,()->{Bundle b=request();b.putBoolean("refreshControls",true);operation(BridgeClient.STATUS,b,r->{snapshot=r;Toast.makeText(activity,"已请求更新耳机状态",Toast.LENGTH_SHORT).show();});});
+        Object callControl=list(connection,"colorpods_control_24","通话按键",new String[]{"按一下静音，按两下挂断","按两下静音，按一下挂断"},new String[]{"3","2"});
+        controls.put(0x24,callControl);controlChange(callControl,0x24,v->new byte[]{0,(byte)Integer.parseInt(v.toString())});
+        Object battery=category(morePage,"cat_colorpods_battery","电池",50);controlSwitch(battery,0x3b);
         Object advancedEntry=category(morePage,"cat_colorpods_advanced_entry","高级",100);
-        Object advancedPage=page(advancedEntry,"advanced","兼容性与诊断","Apple 设备身份、连接状态与恢复");
+        Object advancedPage=page(advancedEntry,"advanced","设备兼容性","Apple 设备身份");
         Object identity=category(advancedPage,"cat_colorpods_identity","设备兼容性",0);
         vendorRow=add(identity,"COUISwitchPreference","colorpods_vendor","以 Apple 设备身份连接");enabled(vendorRow,false);
         change(vendorRow,value->{Bundle b=request();b.putBoolean("enabled",(Boolean)value);operation(BridgeClient.VENDOR,b,r->{snapshot=r;lastError="身份设置已保存，请关闭再开启蓝牙后重新连接耳机";});});
-        Object diagnostics=category(advancedPage,"cat_colorpods_diagnostics","连接诊断",100);
-        statusRow=add(diagnostics,"COUIPreference","colorpods_status","连接与设置状态");targetCall(statusRow,PreferenceTargets.SELECTABLE,false);
-        reconnectRow=add(diagnostics,"COUIJumpPreference","colorpods_route_reconnect","恢复耳机控制连接");click(reconnectRow,()->{Bundle b=request();b.putBoolean("connectOnly",true);operation(BridgeClient.ROUTE,b,r->{snapshot=r;});});
         update();module.info("All settings inserted as host COUI preferences");
     }
     private void controlList(Object parent,int cmd,String[] names,int[] values) throws Exception {
         String[] strings=new String[values.length];for(int i=0;i<values.length;i++)strings[i]=Integer.toString(values[i]);
         Object row=list(parent,"colorpods_control_"+Integer.toHexString(cmd),Protocol.COMMANDS.get(cmd),names,strings);controls.put(cmd,row);
         controlChange(row,cmd,v->new byte[]{(byte)Integer.parseInt(v.toString())});
+    }
+    private boolean selectListeningMode(int bit,boolean selected){
+        if(!ListeningModes.available(listeningMask,bit,listeningOffAllowed,listeningAdaptiveSupported))return false;
+        try{
+            int next=ListeningModes.select(listeningMask,bit,selected);
+            return next!=listeningMask&&sendControl(0x1a,new byte[]{(byte)next});
+        }catch(IllegalArgumentException e){Toast.makeText(activity,e.getMessage(),Toast.LENGTH_SHORT).show();return false;}
     }
     private void controlSwitch(Object parent,int cmd) throws Exception {
         Object row=add(parent,"COUISwitchPreference","colorpods_control_"+Integer.toHexString(cmd),Protocol.COMMANDS.get(cmd));controls.put(cmd,row);switchRows.put(row,true);
@@ -228,8 +285,7 @@ final class HostPreferences {
     }
     private void tuningRows(Object parent,int handle) throws Exception {
         String[][] fields={{"amplification","放大量"},{"tone","音调"},{"noise","环境噪声降低"},{"voice","本声放大"}};
-        String[] names=new String[21],values=new String[21];for(int i=0;i<=20;i++){names[i]=i*5+"%";values[i]=Float.toString(i/20f);}
-        for(String[] f:fields){Object row=list(parent,"colorpods_att_"+handle+"_"+f[0],f[1],names,values);attRows.put(handle+":"+f[0],row);change(row,v->patch(handle,f[0],Float.parseFloat(v.toString())));}
+        for(String[] f:fields){Object row=slider(parent,"colorpods_att_"+handle+"_"+f[0],f[1]);attRows.put(handle+":"+f[0],row);change(row,v->patch(handle,f[0],((Integer)v)/100f));}
         attSwitch(parent,handle,"boost","对话增强");
     }
     private String address() throws Exception {
@@ -237,7 +293,7 @@ final class HostPreferences {
     }
     private Bundle request(){try{return BridgeClient.forDevice(address());}catch(Exception e){throw new IllegalStateException(e);}}
     void start(){active=true;main.removeCallbacksAndMessages(null);connection.start();refresh();}
-    void stop(){active=false;connection.stop();main.removeCallbacksAndMessages(null);}
+    void stop(){active=false;attGeneration++;attLoading=false;attWasReady=false;attValues.clear();connection.stop();main.removeCallbacksAndMessages(null);}
     void resume(){if(!active)start();main.post(this::connectionChanged);}
     private void connectionChanged(){
         if(!alive())return;connection.reconcile();
@@ -255,14 +311,9 @@ final class HostPreferences {
         int link=connection.state();
         boolean connected=link==ConnectionState.CONNECTED||(link==ConnectionState.UNKNOWN&&snapshot.getBoolean("connected"));
         boolean ready=link!=ConnectionState.DISCONNECTED&&snapshot.getBoolean("controlReady");long[] identity=snapshot.getLongArray("nativeStatus");
-        String text=ready?"耳机已连接，原生控制通道就绪":connected?"耳机已连接，等待原生控制通道":"等待耳机连接";
-        if(!ready&&snapshot.getBoolean("remoteAudioOwner"))text="音频已交给其他设备，控制连接待恢复";
-        if(identity!=null)text+="；"+(identity[1]==0?"身份 Hook 未装载":identity[3]>0?"Apple 身份已提交":"身份 Hook 已装载，等待蓝牙重启");
-        if(lastError!=null)text+="\n"+lastError;
-        if(connectionError!=null)text+="\n"+connectionError;
-        StringBuilder diagnosticText=new StringBuilder(text);
         enabled(vendorRow,identity!=null&&!busy);if(identity!=null)checked(vendorRow,identity[0]!=0);
         summary(vendorRow,"修改后需关闭再开启蓝牙");
+        updateAudioSettings(ready);
         Bundle c=snapshot.getBundle("controls");if(c==null)c=Bundle.EMPTY;
         Bundle pending=snapshot.getBundle("pendingControls");if(pending==null)pending=Bundle.EMPTY;
         Bundle updates=snapshot.getBundle("controlUpdates");if(updates==null)updates=Bundle.EMPTY;
@@ -276,37 +327,48 @@ final class HostPreferences {
             // Compatibility for a host still running with the previous backend.
             if(update==null&&pending.containsKey(key))value=pending.getByteArray(key);
             if(sendingControls.containsKey(command))value=sendingControls.get(command);
+            int summaryState=sendingControls.containsKey(command)?ControlWrite.WAITING:state;
+            boolean requiresReport=command==0x1a||command==0x1f||command==0x24||command==0x3b;
+            if(requiresReport)value=Protocol.reportedValue(command,value);
             boolean known=value!=null&&value.length>0;
-            enabled(row,ready&&!busy&&!sendingControls.containsKey(command)&&(!switchRows.containsKey(row)||known));
-            if(switchRows.containsKey(row)){if(known)checked(row,command==0x2c?value.length>1&&value[0]==1&&value[1]==1:value[0]==1);if(command!=0x2c)summary(row,"");}
+            boolean editable=ready&&!busy&&!sendingControls.containsKey(command)&&(!(switchRows.containsKey(row)||requiresReport)||known);
+            enabled(row,editable);
+            if(command==0x1a){
+                listeningMask=known?value[0]&255:-1;
+                byte[] allowOff=Protocol.reportedValue(0x34,c.getByteArray("34"));
+                listeningOffAllowed=allowOff==null||allowOff[0]==1;
+                listeningAdaptiveSupported=(known&&(listeningMask&8)!=0)||Protocol.reportedValue(0x2e,c.getByteArray("2e"))!=null;
+                for(var mode:listeningModeRows.entrySet()){
+                    int bit=mode.getKey();Object toggle=mode.getValue();
+                    boolean available=ListeningModes.available(listeningMask,bit,listeningOffAllowed,listeningAdaptiveSupported);
+                    checked(toggle,known&&(listeningMask&bit)!=0);enabled(toggle,editable&&available);
+                    summary(toggle,!known?"等待耳机回报设置":available?"":bit==1?"请先允许关闭聆听模式":"尚未确认此耳机支持自适应模式");
+                }
+                summary(row,controlSummary(known?ListeningModes.label(listeningMask):"等待耳机回报设置",summaryState));
+            }
+            else if(command==0x1f){if(known)sliders.get(row).value(value[0]&255);summary(row,controlSummary(known?(value[0]&255)+"%":"等待耳机回报设置",summaryState));}
+            else if(command==0x3b){checked(row,known&&value[0]==1);summary(row,controlSummary(known?"根据日常使用习惯优化充电，延缓电池老化":"等待耳机回报设置",summaryState));}
+            else if(command==0x24){call(row,"setValue",String.class,known?Integer.toString(value[1]&255):"");summary(row,controlSummary(known?controlLabel(row,command,value):"等待耳机回报设置",summaryState));}
+            else if(switchRows.containsKey(row)){if(known)checked(row,command==0x2c?value.length>1&&value[0]==1&&value[1]==1:value[0]==1);if(command!=0x2c)summary(row,"");}
+            else if(command==0x2e){if(known)sliders.get(row).value(100-(value[0]&255));summary(row,known?(100-(value[0]&255))+"%":"");}
             else{call(row,"setValue",String.class,known?Integer.toString(value[0]&255):"");summary(row,known?controlLabel(row,command,value):"");}
             if(state==ControlWrite.WAITING)nextDeadline=Math.min(nextDeadline,update.getLong("deadline"));
-            if(update!=null){
-                String result=switch(state){case ControlWrite.CONFIRMED->"已确认";case ControlWrite.DIFFERENT->"回报不一致";case ControlWrite.UNCONFIRMED->"未收到确认";default->"等待回报";};
-                diagnosticText.append('\n').append(Protocol.COMMANDS.get(command)).append("：").append(controlLabel(row,command,expected)).append("（").append(result).append('）');
-                if(state==ControlWrite.DIFFERENT)diagnosticText.append("；耳机回报：").append(controlLabel(row,command,reported));
-            }
         }
-        summary(statusRow,diagnosticText.toString());
         if(nextDeadline!=Long.MAX_VALUE&&active)main.postDelayed(confirmationTimeout,Math.max(1,nextDeadline-SystemClock.elapsedRealtime()));
-        enabled(refreshControlsRow,ready&&!busy);
         boolean attReady=ready&&identity!=null&&identity[0]!=0&&identity[1]!=0&&identity[3]>0;
-        enabled(transRead,attReady&&!busy);enabled(hearingRead,attReady&&!busy);
-        targetCall(transRead,HostTargets.UI_PREF_TITLE,attValues.containsKey(AttCodec.TRANSPARENCY)&&attReady?"刷新耳机设置":"读取耳机设置");
-        targetCall(hearingRead,HostTargets.UI_PREF_TITLE,attValues.containsKey(AttCodec.HEARING_AID)&&attReady?"刷新耳机设置":"读取耳机设置");
-        if(!ready)attValues.clear();
+        if(!attReady){if(attWasReady){attGeneration++;attLoading=false;attValues.clear();}attWasReady=false;}
+        else {if(!attWasReady){attWasReady=true;nextAttLoad=0;}loadHearing();}
         for(var entry:attRows.entrySet()){
             String[] parts=entry.getKey().split(":");int handle=Integer.parseInt(parts[0]);String field=parts[1];Object row=entry.getValue();byte[] data=attValues.get(handle);
             boolean supported=data!=null&&(!field.equals("voice")||data.length>=104);enabled(row,attReady&&!busy&&supported);
             if(!supported){summary(row,"");continue;}
             float value=AttCodec.value(handle,data,field);
             if(switchRows.containsKey(row)){checked(row,value>0.5f);summary(row,"");}
-            else{call(row,"setValue",String.class,Float.toString(value));summary(row,Math.round(value*100)+"%");}
+            else{sliders.get(row).value(Math.round(value*100));summary(row,Math.round(value*100)+"%");}
         }
         boolean multi=snapshot.getBoolean("multipoint");checked(multiRow,multi);enabled(multiRow,identity!=null&&!busy);
         checked(autoMediaRow,snapshot.getBoolean("autoMedia",true));enabled(autoMediaRow,multi&&identity!=null&&!busy);
         checked(autoGameReturnRow,snapshot.getBoolean("autoGameReturn",false));enabled(autoGameReturnRow,multi&&identity!=null&&!busy);
-        enabled(reconnectRow,multi&&identity!=null&&identity[0]!=0&&identity[1]!=0&&identity[3]>0&&!ready&&!busy);
         String[] p=snapshot.getStringArray("peers");String self=snapshot.getString("selfAddress");ArrayList<String> targets=new ArrayList<>(),names=new ArrayList<>();Bundle types=snapshot.getBundle("peerTypes");if(types==null)types=Bundle.EMPTY;
         if(p!=null)for(String peer:p)if(!peer.equals(self)){targets.add(peer);names.add(types.getString(peer,"另一台设备"));}
         entries(routeRow,names.toArray(new String[0]),targets.toArray(new String[0]));enabled(routeRow,multi&&attReady&&!busy&&!targets.isEmpty());
@@ -319,9 +381,46 @@ final class HostPreferences {
     private String controlLabel(Object row,int command,byte[] value) throws Exception {
         if(value==null||value.length==0)return "未知";
         if(switchRows.containsKey(row))return (command==0x2c?value.length>1&&value[0]==1&&value[1]==1:value[0]==1)?"开启":"关闭";
-        String selected=Integer.toString(value[0]&255);Object[] labels=(Object[])targetField(PreferenceTargets.ENTRIES).get(row),values=(Object[])targetField(PreferenceTargets.VALUES).get(row);
+        if(command==0x2e)return (100-(value[0]&255))+"%";
+        String selected=Integer.toString(value[command==0x24?1:0]&255);Object[] labels=(Object[])targetField(PreferenceTargets.ENTRIES).get(row),values=(Object[])targetField(PreferenceTargets.VALUES).get(row);
         for(int i=0;i<values.length;i++)if(selected.equals(values[i].toString()))return labels[i].toString();
         return selected;
+    }
+    private static String controlSummary(String label,int state){
+        return label+switch(state){case ControlWrite.WAITING->" · 等待耳机确认";case ControlWrite.UNCONFIRMED->" · 尚未收到耳机确认";case ControlWrite.DIFFERENT->" · 已显示耳机实际设置";default->"";};
+    }
+    private CustomEq currentEq(){
+        if(eqSelection!=null)return eqSelection;
+        int[] eq=snapshot.getIntArray("customEq");
+        return eq!=null&&eq.length==4?new CustomEq(eq[0],eq[1],eq[2],eq[3]):CustomEq.flat();
+    }
+    private StemConfig currentStem(){
+        if(stemSelection!=null)return stemSelection;
+        int[] actions=snapshot.getIntArray("stemActions");return actions==null?StemConfig.defaults():new StemConfig(actions);
+    }
+    private void updateAudioSettings(boolean ready)throws Exception{
+        boolean editable=ready&&!busy&&snapshot.getInt("advancedControlsVersion")>=2;
+        CustomEq eq=currentEq();checked(eqToggle,eq.enabled());enabled(eqToggle,editable);
+        summary(eqToggle,snapshot.getBoolean("eqKnown")?"":"首次使用从标准音效开始");
+        int[] values={eq.low(),eq.mid(),eq.high()};int index=0;
+        for(Object row:eqRows.values()){int value=values[index++];sliders.get(row).value(value);enabled(row,editable&&eq.enabled());summary(row,value+"%");}
+        enabled(eqReset,editable&&eq.enabled());
+        StemConfig config=currentStem();
+        for(var entry:stemRows.entrySet()){
+            Object row=entry.getValue();int action=config.values()[entry.getKey()];
+            call(row,"setValue",String.class,Integer.toString(action));enabled(row,editable);
+            Object[] names=(Object[])targetField(PreferenceTargets.ENTRIES).get(row);summary(row,names[action].toString());
+        }
+    }
+    private boolean changeEq(String field,int value){
+        if(busy)return false;
+        eqSelection=currentEq().patch(field,value);Bundle b=request();b.putString("field",field);b.putInt("value",value);
+        operation(BridgeClient.EQ_PATCH,b,r->{snapshot=r;},()->eqSelection=null);return true;
+    }
+    private boolean changeStem(int side,int press,int action){
+        if(busy)return false;
+        stemSelection=currentStem().with(side,press,action);Bundle b=request();b.putInt("side",side);b.putInt("press",press);b.putInt("action",action);
+        operation(BridgeClient.STEM_CONFIG,b,r->{snapshot=r;},()->stemSelection=null);return true;
     }
     private boolean sendControl(int command,byte[] value){
         if(busy||sendingControls.containsKey(command))return false;
@@ -343,12 +442,27 @@ final class HostPreferences {
         return true;
     }
     private void route(String target,boolean reverse){Bundle b=request();b.putString("target",target);b.putBoolean("reverse",reverse);operation(BridgeClient.ROUTE,b,r->{snapshot=r;lastError=r.getBoolean("routeConfirmed")?"耳机已确认切换":r.getBoolean("audioReady")?"手机音频通道已接通，等待耳机更新来源":"切换请求已发送，等待耳机确认";});}
-    private void read(int handle){Bundle b=request();b.putInt("handle",handle);operation(BridgeClient.ATT_READ,b,r->{attValues.put(handle,r.getByteArray("value"));});}
-    private void readHearing(){Bundle b=request();b.putInt("handle",AttCodec.HEARING_AID);operation(BridgeClient.ATT_READ,b,r->{attValues.put(AttCodec.HEARING_AID,r.getByteArray("value"));main.post(()->read(AttCodec.LOUD_SOUND));});}
+    private void loadHearing(){
+        if(attLoading||busy||SystemClock.elapsedRealtime()<nextAttLoad||
+                (attValues.containsKey(AttCodec.HEARING_AID)&&attValues.containsKey(AttCodec.LOUD_SOUND)))return;
+        attLoading=true;nextAttLoad=SystemClock.elapsedRealtime()+10000;int generation=attGeneration;
+        Bundle request=request();
+        IO.execute(()->{
+            Map<Integer,byte[]> loaded=new HashMap<>();
+            for(int handle:new int[]{AttCodec.HEARING_AID,AttCodec.LOUD_SOUND}){
+                try{Bundle b=new Bundle(request);b.putInt("handle",handle);byte[] value=bridge.request(BridgeClient.ATT_READ,b).getByteArray("value");AttCodec.validateValue(handle,value);loaded.put(handle,value);}
+                catch(Exception e){module.info("Automatic hearing settings read failed: "+e.getMessage());}
+            }
+            main.post(()->{if(generation!=attGeneration)return;attLoading=false;if(!alive()||!attWasReady)return;loaded.forEach(attValues::putIfAbsent);try{update();}catch(Exception e){module.error("COUI hearing update failed",e);}});
+        });
+    }
     private void patch(int handle,String field,float value){Bundle b=request();b.putInt("handle",handle);b.putString("field",field);b.putFloat("value",value);operation(BridgeClient.ATT_PATCH,b,r->{attValues.put(handle,r.getByteArray("value"));});}
     private void operation(int operation,Bundle b,java.util.function.Consumer<Bundle> callback){
+        operation(operation,b,callback,()->{});
+    }
+    private void operation(int operation,Bundle b,java.util.function.Consumer<Bundle> callback,Runnable completed){
         if(busy)return;busy=true;lastError=null;try{update();}catch(Exception ignored){}
         IO.execute(()->{Bundle response=null;String error=null;try{response=bridge.request(operation,b);}catch(Exception e){error=e.getMessage();}
-            Bundle result=response;String message=error;main.post(()->{busy=false;if(!alive())return;lastError=message;if(message!=null)Toast.makeText(activity,"设置失败，请重试",Toast.LENGTH_SHORT).show();if(result!=null)callback.accept(result);try{update();}catch(Exception e){module.error("COUI operation update failed",e);}});});
+            Bundle result=response;String message=error;main.post(()->{busy=false;completed.run();if(!alive())return;lastError=message;if(message!=null)Toast.makeText(activity,"设置失败，请重试",Toast.LENGTH_SHORT).show();if(result!=null)callback.accept(result);try{update();}catch(Exception e){module.error("COUI operation update failed",e);}});});
     }
 }

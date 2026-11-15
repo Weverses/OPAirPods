@@ -27,11 +27,15 @@ final class BluetoothBackend extends Binder {
     private final Map<String, Map<Integer, Control>> states = new ConcurrentHashMap<>();
     private final Map<String, Map<Integer, ControlWrite>> controlWrites = new ConcurrentHashMap<>();
     private final Map<String,ControlWrite> controlRefreshes=new ConcurrentHashMap<>();
+    private final Map<String,Control> eqReports=new ConcurrentHashMap<>();
+    private final Map<String,ControlWrite> eqWrites=new ConcurrentHashMap<>();
+    private record StemBinding(StemConfig config,BluetoothSocket socket,StemConfig.Dispatch dispatch,PlaybackSessions.Session<android.media.session.MediaController> playbackSession) {}
+    private final Map<String,StemBinding> stemBindings=new ConcurrentHashMap<>();
     private final Map<String, AttChannel> channels = new ConcurrentHashMap<>();
     private final Map<String, java.util.List<String>> peers = new ConcurrentHashMap<>();
     private final Map<String, java.util.List<Routing.Peer>> peerRecords=new ConcurrentHashMap<>();
     private final Map<String, Long> sourceSequences=new ConcurrentHashMap<>();
-    private final Map<String, java.util.List<android.media.session.MediaController>> pausedSessions=new ConcurrentHashMap<>();
+    private final PlaybackSessions<android.media.session.MediaController> pausedSessions=new PlaybackSessions<>();
     private final Map<String,Map<String,Routing.Message>> peerReports=new ConcurrentHashMap<>();
     private final Map<String,Claim> claims=new ConcurrentHashMap<>();
     private final java.util.Set<BluetoothSocket> validated=ConcurrentHashMap.newKeySet();
@@ -177,6 +181,13 @@ final class BluetoothBackend extends Binder {
         if(reader!=null&&sessions.get(device.getAddress())!=reader)return;
         if(!sessions.containsKey(device.getAddress()))try{sessionOpened(device,socket(device));}catch(Exception ignored){}
         BluetoothSocket packetSession=sessions.get(device.getAddress());
+        if(bytes[4]==0x63){
+            try{
+                CustomEq eq=CustomEq.parse(bytes,length);
+                synchronized(controlsLock){if(packetSession!=null&&sessions.get(device.getAddress())==packetSession)eqReports.put(device.getAddress(),new Control(eq.value(),++sequence));}
+            }catch(IllegalArgumentException ignored){}
+            return;
+        }
         if (bytes[4] == 0x2e) {
             try { peers.put(device.getAddress(), Routing.peers(bytes, length));var records=Routing.peerRecords(bytes,length);var previous=peerRecords.put(device.getAddress(),records);
                 if(!records.equals(previous))try{String self=localAddress();module.info("TiPi peers: "+records.stream().map(p->(self.equals(p.address())?"self":"peer")+"/role="+Integer.toHexString(p.role())+"/state="+Integer.toHexString(p.state())).collect(java.util.stream.Collectors.toList()));}catch(IOException ignored){}
@@ -187,6 +198,11 @@ final class BluetoothBackend extends Binder {
         if (bytes[4] == 0x0e && length >= 13) {
             synchronized(controlsLock){String source=Routing.mac(bytes,6,true);String previous=audioSources.put(device.getAddress(),source);Integer type=sourceTypes.put(device.getAddress(),bytes[12]&255);sourceSequences.put(device.getAddress(),++sequence);
                 if(!source.equals(previous)||!java.util.Objects.equals(type,bytes[12]&255))try{module.info("Audio source: local="+localAddress().equals(source)+" type="+(bytes[12]&255));}catch(IOException ignored){}}
+            routingWorker.execute(()->{
+                if(packetSession==null||sessions.get(device.getAddress())!=packetSession)return;
+                if(stemRouteLocal(device))restoreStem(device,packetSession);
+                else try{suspendStem(device);}catch(Exception e){module.info("Stem route suspension unavailable: "+e.getMessage());}
+            });
 
             if(multiActive())try{
                 yieldAudio(device,handoff.source(device.getAddress(),localAddress().equals(audioSources.get(device.getAddress())),bytes[12]&255),"音频来源已切换到另一台设备");
@@ -231,13 +247,18 @@ final class BluetoothBackend extends Binder {
             }
             return;
         }
-        if (!Protocol.COMMANDS.containsKey(command)&&command!=6) return;
+        if (!Protocol.COMMANDS.containsKey(command)&&command!=6&&command!=0x39) return;
         if(command==0x17)module.info("AACP press-speed state received: "+Protocol.hex(bytes,7,11));
         synchronized (controlsLock) {
+            // The reader may have ended after the entry check. In particular,
+            // an old 0x39 report must not configure the replacement binding.
+            if(packetSession==null||sessions.get(device.getAddress())!=packetSession)return;
             states.computeIfAbsent(device.getAddress(), k -> new ConcurrentHashMap<>())
                 .put(command, new Control(Arrays.copyOfRange(bytes, 7, 11), ++sequence));
             controlsLock.notifyAll();
         }
+        if(command==0x39){StemBinding binding=stemBindings.get(device.getAddress());int mask=bytes[7]&255;
+            if(binding!=null&&binding.socket==packetSession&&mask<=15)binding.dispatch.report(mask);}
         if(command==6){
             int value=bytes[7]&255;module.info("AACP ownership received: "+value);
             HandoffState.Ticket ticket=handoff.ownership(device.getAddress(),value);
@@ -293,6 +314,7 @@ final class BluetoothBackend extends Binder {
         if(previous!=null)disconnected(device);sessions.put(device.getAddress(),socket);lastDevice=device;openedAt.put(device.getAddress(),SystemClock.elapsedRealtime());sessionCounts.merge(device.getAddress(),1,Integer::sum);module.info("OEM AACP session opened");
         Claim pending=claims.get(device.getAddress());if(pending!=null&&handoff.preparing(pending.ticket))pending.socket=socket;
         requestState(device,1000);
+        new Handler(Looper.getMainLooper()).postDelayed(()->routingWorker.execute(()->restoreStem(device,socket)),1500);
         new Handler(Looper.getMainLooper()).postDelayed(()->routingWorker.execute(()->validateSession(device,socket)),5000);
     }
     private boolean peerTakingOver(String address,String self){for(Routing.Peer peer:peerRecords.getOrDefault(address,java.util.List.of()))if(!peer.address().equals(self)&&peer.takingOver())return true;return false;}
@@ -346,65 +368,86 @@ final class BluetoothBackend extends Binder {
     }
     private void yieldAudio(BluetoothDevice device,HandoffState.Ticket ticket,String notice,boolean pauseMedia){
         if(ticket==null||!multiActive())return;
+        var playbackSession=pausedSessions.capture(device.getAddress());
+        java.util.function.BooleanSupplier valid=()->multiActive()&&handoff.current(ticket)&&pausedSessions.current(playbackSession);
         routingWorker.execute(()->{
             try{
-                if(!multiActive()||!handoff.current(ticket))return;
+                if(!valid.getAsBoolean())return;
                 if(pauseMedia){
                     if(autoGameReturn()){
                         long id=gameState(device).capture(currentGame());
                         if(id!=0){gameGuard(device).arm(gameState(device).target(),SystemClock.elapsedRealtime());module.info("Game return armed for foreground game: "+gameState(device).target().packageName());
                             routingWorker.schedule(()->watchGameReturn(device,id),500,java.util.concurrent.TimeUnit.MILLISECONDS);}
                     }
-                    java.util.List<android.media.session.MediaController> paused=MediaPlayback.pause(context);
-                    if(!paused.isEmpty())pausedSessions.put(device.getAddress(),paused);
+                    pausedSessions.pause(playbackSession,()->valid.getAsBoolean()?MediaPlayback.pause(context):java.util.List.of());
                     module.info("Remote handoff: dispatched Android media pause");
                 }
-                sendFrames(device,()->multiActive()&&handoff.current(ticket),Routing.ownership(false));
-                String self=localAddress();for(String peer:peers.getOrDefault(device.getAddress(),java.util.List.of()))if(!peer.equals(self))sendFrames(device,()->multiActive()&&handoff.current(ticket),Routing.streamingInfo(self,peer,false));mediaReported.put(device.getAddress(),false);
-                if(!handoff.current(ticket))return;
+                try{suspendStem(device);}catch(Exception e){module.info("Stem handoff suspension unavailable: "+e.getMessage());}
+                sendFrames(device,valid,Routing.ownership(false));
+                String self=localAddress();for(String peer:peers.getOrDefault(device.getAddress(),java.util.List.of()))if(!peer.equals(self))sendFrames(device,valid,Routing.streamingInfo(self,peer,false));
+                if(!valid.getAsBoolean())return;
+                mediaReported.put(device.getAddress(),false);
                 // Upstream disconnects A2DP/HFP here. In the native ColorOS
                 // integration that makes Settings report the earbuds disconnected.
                 // PAUSE suspends the media stream; keep profiles and AACP alive.
                 routeNotices.put(device.getAddress(),notice);
                 module.info("Remote handoff: ownership yielded; audio profiles and AACP retained");
-            }catch(Exception e){routeFailure(device,e);}
+            }catch(Exception e){if(valid.getAsBoolean())routeFailure(device,e);}
         });
     }
-    private void ensureControl(BluetoothDevice device)throws Exception{ensureControl(device,()->multiActive());}
     private void ensureControl(BluetoothDevice device,java.util.function.BooleanSupplier valid)throws Exception{
         ensureControl(device,valid,5500);
     }
     private void ensureControl(BluetoothDevice device,java.util.function.BooleanSupplier valid,long timeout)throws Exception{
+        ensureControl(device,valid,timeout,true);
+    }
+    private Boolean aclConnected(BluetoothDevice device){
+        try{return (Boolean)Reflect.call(device,"isConnected",new Class[0]);}
+        catch(Exception ignored){return null;}
+    }
+    private void requireControlLink(BluetoothDevice device,boolean activeRequest)throws IOException{
+        if(!ConnectionState.canRecoverControl(activeRequest,activeRequest?null:aclConnected(device)))
+            throw new IOException("耳机没有已确认的蓝牙连接，已停止后台恢复");
+    }
+    private void ensureControl(BluetoothDevice device,java.util.function.BooleanSupplier valid,long timeout,boolean activeRequest)throws Exception{
         if(!valid.getAsBoolean())throw new IOException("控制恢复已取消");
         try{socket(device);return;}catch(Exception ignored){}
         if(context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)!=android.content.pm.PackageManager.PERMISSION_GRANTED)throw new IOException("系统蓝牙连接权限不可用");
         if(manager==null||!BluetoothAdapter.getDefaultAdapter().isEnabled()||device.getBondState()!=BluetoothDevice.BOND_BONDED)throw new IOException("请先开启蓝牙并完成耳机配对");
         if(!valid.getAsBoolean())throw new IOException("控制恢复已取消");
+        requireControlLink(device,activeRequest);
         Reflect.call(manager,"checkAndConnectAirPods",new Class[]{BluetoothDevice.class},device);
         long until=SystemClock.elapsedRealtime()+timeout;
-        while(SystemClock.elapsedRealtime()<until){if(!valid.getAsBoolean())throw new IOException("控制恢复已取消");try{socket(device);return;}catch(Exception ignored){}SystemClock.sleep(100);}
+        while(SystemClock.elapsedRealtime()<until){if(!valid.getAsBoolean())throw new IOException("控制恢复已取消");requireControlLink(device,activeRequest);try{socket(device);return;}catch(Exception ignored){}SystemClock.sleep(100);}
         throw new IOException("原生控制通道重连超时，请检查耳机是否可用后重试");
     }
     private void recoverControl(BluetoothDevice device){
         if(context==null||context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)!=android.content.pm.PackageManager.PERMISSION_GRANTED)return;
-        if(!multiActive()||!BluetoothAdapter.getDefaultAdapter().isEnabled()||device.getBondState()!=BluetoothDevice.BOND_BONDED)return;
+        if(!multiActive()||!BluetoothAdapter.getDefaultAdapter().isEnabled()||device.getBondState()!=BluetoothDevice.BOND_BONDED||!Boolean.TRUE.equals(aclConnected(device)))return;
+        var playbackSession=pausedSessions.capture(device.getAddress());
+        HandoffState.Ticket ticket=handoff.recoveryTicket(device.getAddress());if(ticket==null)return;
+        java.util.function.BooleanSupplier valid=()->multiActive()&&handoff.current(ticket)&&pausedSessions.current(playbackSession);
         int attempt=handoff.recovery(device.getAddress());if(attempt==0)return;
         new Handler(Looper.getMainLooper()).postDelayed(()->recoveryWorker.execute(()->{
             try{
-                if(!multiActive()||!handoff.remoteOwns(device.getAddress()))return;
-                ensureControl(device);routeNotices.put(device.getAddress(),"控制通道已恢复，音频仍由另一台设备使用");
+                if(!valid.getAsBoolean()||!Boolean.TRUE.equals(aclConnected(device)))return;
+                ensureControl(device,valid,5500,false);
+                if(!valid.getAsBoolean()||!Boolean.TRUE.equals(aclConnected(device)))return;
+                routeNotices.put(device.getAddress(),"控制通道已恢复，音频仍由另一台设备使用");
                 module.info("Recovered OEM AACP after remote handoff; audio not reconnected");
-            }catch(Exception e){routeFailure(device,e);recoverControl(device);}
+            }catch(Exception e){if(!valid.getAsBoolean()||!Boolean.TRUE.equals(aclConnected(device)))return;routeFailure(device,e);recoverControl(device);}
         }),attempt*1000L);
     }
     synchronized void disconnected(BluetoothDevice device) {
         if (device == null) return;
+        pausedSessions.disconnected(device.getAddress());
+        stemBindings.remove(device.getAddress());
         GameReturnState game=gameState(device);boolean retain=false;
         if(autoGameReturn()&&game.pending())try{
             retain=game.target().sameApp(currentForeground())&&Boolean.TRUE.equals(Reflect.call(device,"isConnected",new Class[0]));
         }catch(Exception ignored){}
         BluetoothSocket ended=sessions.remove(device.getAddress());if(ended!=null){validated.remove(ended);sessionDrops.merge(device.getAddress(),1,Integer::sum);}handoff.disconnected(device.getAddress());
-        synchronized(controlsLock){states.remove(device.getAddress());controlWrites.remove(device.getAddress());controlRefreshes.remove(device.getAddress());}
+        synchronized(controlsLock){states.remove(device.getAddress());controlWrites.remove(device.getAddress());controlRefreshes.remove(device.getAddress());eqReports.remove(device.getAddress());eqWrites.remove(device.getAddress());}
         requested.remove(device.getAddress());
         validationClaims.remove(device.getAddress());peerReports.remove(device.getAddress());mediaReported.remove(device.getAddress());openedAt.remove(device.getAddress());peers.remove(device.getAddress());peerRecords.remove(device.getAddress());sourceSequences.remove(device.getAddress()); audioSources.remove(device.getAddress());
         sourceTypes.remove(device.getAddress());peerTypes.remove(device.getAddress());routeNotices.remove(device.getAddress());announced.removeIf(key->key.startsWith(device.getAddress()+"/"));
@@ -466,6 +509,126 @@ final class BluetoothBackend extends Binder {
                 return update.state(observed==null?null:observed.value,observed==null?0:observed.received,SystemClock.elapsedRealtime())==ControlWrite.CONFIRMED;
             }
         }
+    }
+    private CustomEq displayedEq(String address){
+        synchronized(controlsLock){
+            Control report=eqReports.get(address);ControlWrite write=eqWrites.get(address);
+            int state=write==null?0:write.state(report==null?null:report.value,report==null?0:report.received,SystemClock.elapsedRealtime());
+            byte[] value=ControlWrite.displayedValue(report==null?null:report.value,write==null?null:write.expected(),state);
+            return value==null?null:CustomEq.fromValue(value);
+        }
+    }
+    private void patchEq(BluetoothDevice device,String field,int value)throws Exception{
+        synchronized(commandLock){
+            String address=device.getAddress();BluetoothSocket expected=socket(device);long before;
+            synchronized(controlsLock){before=sequence;}
+            CustomEq current=displayedEq(address),next=(current==null?CustomEq.flat():current).patch(field,value);
+            sendFrames(device,()->sessions.get(address)==expected,next.packet());
+            synchronized(controlsLock){
+                if(sessions.get(address)!=expected)throw new IOException("耳机连接已变化");
+                eqWrites.put(address,new ControlWrite(next.value(),before,SystemClock.elapsedRealtime()));
+            }
+            requestState(device,800);
+        }
+    }
+    private String stemKey(String address){return "stem/"+address;}
+    private StemConfig savedStem(String address){
+        String saved=context.getSharedPreferences("colorpods",0).getString(stemKey(address),null);
+        try{return saved==null?StemConfig.defaults():StemConfig.decode(saved);}
+        catch(IllegalArgumentException e){module.error("Invalid saved stem configuration",e);return StemConfig.defaults();}
+    }
+    private void applyStem(BluetoothDevice device,BluetoothSocket expected,StemConfig config)throws Exception{
+        String address=device.getAddress();long before;synchronized(controlsLock){before=sequence;}
+        var playbackSession=pausedSessions.capture(address);
+        sendFrames(device,()->sessions.get(address)==expected&&(config.mask()==0||stemRouteLocal(device)),config.packet());
+        synchronized(controlsLock){
+            if(sessions.get(address)!=expected||!pausedSessions.current(playbackSession))throw new IOException("耳机连接已变化");
+            Control report=states.getOrDefault(address,Map.of()).get(0x39);
+            int mask=report!=null&&report.received>before?(report.value[0]&255):config.mask();
+            stemBindings.put(address,new StemBinding(config,expected,new StemConfig.Dispatch(config,mask<=15?mask:0),playbackSession));
+        }
+    }
+    private void configureStem(BluetoothDevice device,int side,int type,int action)throws Exception{
+        synchronized(commandLock){
+            String address=device.getAddress();BluetoothSocket expected=socket(device);
+            StemConfig old=savedStem(address),next=old.with(side,type,action);
+            boolean local=stemRouteLocal(device);
+            if(local)applyStem(device,expected,next);
+            else {
+                try{suspendStem(device);}catch(Exception e){module.info("Stem configuration deferred to local route: "+e.getMessage());}
+                stemBindings.remove(address);
+            }
+            if(!context.getSharedPreferences("colorpods",0).edit().putString(stemKey(address),next.encode()).commit()){
+                if(local)try{applyStem(device,expected,old);}catch(Exception e){module.error("Stem configuration rollback failed",e);}
+                throw new IOException("无法保存耳柄配置");
+            }
+        }
+    }
+    private void restoreStem(BluetoothDevice device,BluetoothSocket expected){
+        synchronized(commandLock){
+            if(sessions.get(device.getAddress())!=expected||!stemRouteLocal(device)||stemBindings.containsKey(device.getAddress())
+                    ||!context.getSharedPreferences("colorpods",0).contains(stemKey(device.getAddress())))return;
+            try{applyStem(device,expected,savedStem(device.getAddress()));}
+            catch(Exception e){module.info("Stem configuration restore unavailable: "+e.getMessage());}
+        }
+    }
+    private void suspendStem(BluetoothDevice device)throws Exception{
+        synchronized(commandLock){
+            String address=device.getAddress();StemBinding binding=stemBindings.get(address);
+            if(binding==null)return;
+            if(binding.config.mask()==0){stemBindings.remove(address,binding);return;}
+            sendFrames(device,()->sessions.get(address)==binding.socket&&!stemRouteLocal(device),StemConfig.defaults().packet());
+            stemBindings.remove(address,binding);
+        }
+    }
+    private boolean stemRouteLocal(BluetoothDevice device){
+        boolean remoteOwner=handoff.remoteOwns(device.getAddress()),call=remoteCall(device);
+        // An idle Mac remains the selected device; NONE is not a local takeover.
+        try{String source=audioSources.get(device.getAddress());String self=source==null||"00:00:00:00:00:00".equals(source)?null:localAddress();return StemConfig.localRoute(remoteOwner,call,source,self);}
+        catch(IOException ignored){return false;}
+    }
+    boolean stemPacket(byte[] bytes,int length,BluetoothDevice device,BluetoothSocket reader){
+        if(device==null)return false;
+        try{
+            StemConfig.Press press=StemConfig.parse(bytes,length);StemBinding binding=stemBindings.get(device.getAddress());
+            if(binding==null||reader!=null&&binding.socket!=reader||!stemActive(device,binding)||!binding.dispatch.handles(press))return false;
+            routingWorker.execute(()->stemPress(device,binding,press));return true;
+        }catch(IllegalArgumentException ignored){return false;}
+    }
+    private boolean stemActive(BluetoothDevice device,StemBinding binding){
+        if(stemBindings.get(device.getAddress())!=binding||sessions.get(device.getAddress())!=binding.socket||!binding.socket.isConnected()
+                ||!pausedSessions.current(binding.playbackSession)
+                ||!stemRouteLocal(device))return false;
+        android.media.AudioManager audio=context.getSystemService(android.media.AudioManager.class);
+        if(audio==null||audio.getMode()!=android.media.AudioManager.MODE_NORMAL)return false;
+        return true;
+    }
+    private void stemPress(BluetoothDevice device,StemBinding binding,StemConfig.Press press){
+        try{
+            if(!stemActive(device,binding))return;
+            int action=binding.dispatch.take(press,SystemClock.elapsedRealtime());
+            if(action==StemConfig.DEFAULT||action==StemConfig.NONE)return;
+            if(action==StemConfig.CYCLE){
+                ListeningModeNotice mode=modeNotices.get(device.getAddress());
+                Control modes=states.getOrDefault(device.getAddress(),Map.of()).get(0x1a),off=states.getOrDefault(device.getAddress(),Map.of()).get(0x34);
+                if(mode==null||modes==null)return;
+                int mask=modes.value[0]&255;if(off!=null&&off.value[0]==2)mask&=~1;
+                int next=StemConfig.nextMode(mode.mode(),mask);
+                sendFrames(device,()->stemActive(device,binding),new byte[]{4,0,4,0,9,0,0x0d,(byte)next,0,0,0});
+            }else if(action==StemConfig.ASSISTANT){
+                pausedSessions.runIfCurrent(binding.playbackSession,()->stemActive(device,binding),()->{
+                    try{DefaultAssistant.launch(context);}catch(IOException e){throw new IllegalStateException(e.getMessage(),e);}
+                });
+            }
+            else {
+                int key=switch(action){case StemConfig.PLAY_PAUSE->android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE;case StemConfig.NEXT->android.view.KeyEvent.KEYCODE_MEDIA_NEXT;case StemConfig.PREVIOUS->android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS;default->throw new IllegalArgumentException("未知的媒体动作");};
+                android.media.AudioManager audio=context.getSystemService(android.media.AudioManager.class);
+                pausedSessions.runIfCurrent(binding.playbackSession,()->stemActive(device,binding),()->{
+                    long now=SystemClock.uptimeMillis();
+                    for(int phase:new int[]{android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.ACTION_UP})audio.dispatchMediaKeyEvent(new android.view.KeyEvent(now,now,phase,key,0));
+                });
+            }
+        }catch(Exception e){module.error("Stem action unavailable",e);}
     }
     private void refreshAfterControl(BluetoothDevice device,BluetoothSocket expected,Handler worker,ControlWrite latest){
         String address=device.getAddress();controlRefreshes.put(address,latest);
@@ -546,6 +709,7 @@ final class BluetoothBackend extends Binder {
         Bundle result = new Bundle(); result.putBoolean("manager", manager != null);
         result.putInt("controlConfirmationVersion",1);result.putInt("routingVersion",2);result.putInt("handoffNoticeVersion",2);result.putInt("gameReturnVersion",6);
         result.putInt("listeningModeNoticeVersion",1);
+        result.putInt("advancedControlsVersion",2);
         ListeningModeNotice modeNotice=address==null?null:modeNotices.get(address);
         result.putInt("listeningMode",modeNotice==null?0:modeNotice.mode());
         result.putBoolean("native", nativeLoaded);
@@ -572,7 +736,13 @@ final class BluetoothBackend extends Binder {
                     if(state==ControlWrite.WAITING)pending.putByteArray(key,write.expected());
                 }
                 result.putBundle("controls",controls);result.putBundle("pendingControls",pending);result.putBundle("controlUpdates",updates);
+                CustomEq eq=displayedEq(address);result.putBoolean("eqKnown",eq!=null);eq=eq==null?CustomEq.flat():eq;
+                result.putIntArray("customEq",new int[]{eq.state(),eq.low(),eq.mid(),eq.high()});
+                Control eqReport=eqReports.get(address);ControlWrite eqWrite=eqWrites.get(address);
+                result.putInt("eqConfirmation",eqWrite==null?0:eqWrite.state(eqReport==null?null:eqReport.value,eqReport==null?0:eqReport.received,now));
             }
+            result.putIntArray("stemActions",savedStem(address).values());
+            StemBinding binding=stemBindings.get(address);result.putBoolean("stemReady",binding!=null&&binding.socket==sessions.get(address));
             result.putStringArray("peers", peers.getOrDefault(address, java.util.List.of()).toArray(new String[0]));
             result.putString("audioSource", audioSources.get(address));
             result.putInt("audioSourceType",sourceTypes.getOrDefault(address,0));
@@ -643,6 +813,12 @@ final class BluetoothBackend extends Binder {
                     BluetoothDevice device = device(address); int command = request.getInt("command");
                     byte[] value = request.getByteArray("value");
                     boolean confirmed=control(device, command, value);result=status(address);result.putBoolean("controlConfirmed",confirmed);
+                }
+                case BridgeClient.EQ_PATCH -> {
+                    patchEq(device(address),request.getString("field",""),request.getInt("value",-1));result=status(address);
+                }
+                case BridgeClient.STEM_CONFIG -> {
+                    configureStem(device(address),request.getInt("side"),request.getInt("press",-1),request.getInt("action",-1));result=status(address);
                 }
                 case BridgeClient.ATT_READ -> {
                     int handle = request.getInt("handle"); AttCodec.validateHandle(handle);
@@ -733,6 +909,7 @@ final class BluetoothBackend extends Binder {
         final GameReturnState.Target game;
         final long gameReturnId;
         final HandoffState.Ticket ticket;
+        final PlaybackSessions.Session<android.media.session.MediaController> playbackSession;
         volatile BluetoothSocket socket;
         java.util.List<android.media.session.MediaController> paused=java.util.List.of();
         long before,deadline;
@@ -743,8 +920,10 @@ final class BluetoothBackend extends Binder {
         boolean streamRestarted,streaming;
         final AudioRebuildWindow audioWindow=new AudioRebuildWindow();
         Claim(BluetoothDevice device,Bundle request,android.media.session.MediaController player,
-              java.util.concurrent.CompletableFuture<Bundle> result,HandoffState.Ticket ticket,GameReturnState.Target game){
+              java.util.concurrent.CompletableFuture<Bundle> result,HandoffState.Ticket ticket,GameReturnState.Target game,
+              PlaybackSessions.Session<android.media.session.MediaController> playbackSession){
             this.device=device;this.request=request;this.player=player;this.result=result;this.ticket=ticket;automatic=request.getBoolean("automatic");
+            this.playbackSession=playbackSession;
             gameReturn=request.getBoolean("gameReturn");gameReturnId=request.getLong("gameReturnId");
             this.game=game;audioUid=game!=null?game.uid():request.getInt("audioUid",-1);routeOnly=game!=null||request.getBoolean("audioOnly");
         }
@@ -783,11 +962,11 @@ final class BluetoothBackend extends Binder {
                 if(old!=null){if(request.getBoolean("automatic")&&!old.gameReturn){result.completeExceptionally(new IOException("音频切换正在进行"));return;}old.result.cancel(false);}
                 if(!gameReturn){gameState(device).cancel();if(game==null)gameGuard(device).cancel();}
                 validationClaims.remove(device.getAddress());
-                Claim claim=new Claim(device,request,player,result,handoff.beginClaim(device.getAddress()),game);claims.put(device.getAddress(),claim);
-                claim.playing=claim.routeOnly||claim.automatic||MediaPlayback.playing(context)||MediaPlayback.resumable(pausedSessions.getOrDefault(device.getAddress(),java.util.List.of()));
+                Claim claim=new Claim(device,request,player,result,handoff.beginClaim(device.getAddress()),game,pausedSessions.capture(device.getAddress()));claims.put(device.getAddress(),claim);
+                claim.playing=claim.routeOnly||claim.automatic||MediaPlayback.playing(context)||MediaPlayback.resumable(pausedSessions.paused(claim.playbackSession));
                 if(claim.routeOnly){claim.paused=java.util.List.of();}
-                else if(claim.automatic){claim.paused=MediaPlayback.pause(context,player);if(!claim.paused.isEmpty())pausedSessions.put(device.getAddress(),claim.paused);}
-                else claim.paused=pausedSessions.getOrDefault(device.getAddress(),java.util.List.of());
+                else if(claim.automatic)claim.paused=pausedSessions.pause(claim.playbackSession,()->valid(claim)?MediaPlayback.pause(context,player):java.util.List.of());
+                else claim.paused=pausedSessions.paused(claim.playbackSession);
                 module.info("Route transaction started: generation="+claim.ticket.generation()+" automatic="+claim.automatic+" gameReturn="+claim.gameReturn+" routeOnly="+claim.routeOnly+" audioUid="+claim.audioUid);
                 routingWorker.schedule(()->{if(claims.get(device.getAddress())==claim)finish(claim,new IOException("音频切换未在期限内完成"));},25,java.util.concurrent.TimeUnit.SECONDS);
                 mediaRecoveryWorker.execute(()->{
@@ -801,6 +980,7 @@ final class BluetoothBackend extends Binder {
     }
     private boolean valid(Claim c){
         return !c.result.isDone()&&claims.get(c.device.getAddress())==c&&handoff.claiming(c.ticket)&&multiActive()&&(!c.automatic||(c.gameReturn?autoGameReturn():autoMedia()))
+            &&(c.routeOnly||pausedSessions.current(c.playbackSession))
             &&(!c.gameReturn||gameState(c.device).current(c.gameReturnId)&&!remoteCall(c.device))
             &&(!c.routeOnly||routeAudioValid(c))
             &&(c.socket==null||sessions.get(c.device.getAddress())==c.socket&&c.socket.isConnected());
@@ -815,7 +995,7 @@ final class BluetoothBackend extends Binder {
                 if(!c.routeOnly){
                 PlaybackPauseGate.Action action=c.pauseGate.check(MediaPlayback.paused(c.paused),now);
                 if(action==PlaybackPauseGate.Action.TIMEOUT)throw new IOException("播放器尚未暂停，已取消接管");
-                if(action==PlaybackPauseGate.Action.PAUSE){MediaPlayback.pauseAgain(context,c.paused);module.info("Reasserted player pause after control recovery");}
+                if(action==PlaybackPauseGate.Action.PAUSE){mediaAction(c,()->MediaPlayback.pauseAgain(context,c.paused));module.info("Reasserted player pause after control recovery");}
                 if(action!=PlaybackPauseGate.Action.READY){later(c);return;}
                 }
                 c.phase=2;c.deadline=now+3000;
@@ -853,9 +1033,10 @@ final class BluetoothBackend extends Binder {
                     if(now>=c.deadline)throw new IOException("耳机尚未选中手机音频，保持暂停");later(c);return;
                 }
                 if(c.playing&&!c.routeOnly){
-                    if(!valid(c))throw new IOException("音频切换已取消");
-                    int resumed=MediaPlayback.resume(c.paused);
-                    module.info("Resumed selected local player: count="+resumed+" generation="+c.ticket.generation());
+                    mediaAction(c,()->{
+                        int resumed=MediaPlayback.resume(c.paused);
+                        module.info("Resumed selected local player: count="+resumed+" generation="+c.ticket.generation());
+                    });
                 }
                 c.phase=5;c.deadline=now+4000;
             }
@@ -884,22 +1065,28 @@ final class BluetoothBackend extends Binder {
         }catch(Exception e){module.error("Route phase failed: phase="+c.phase,e);finish(c,e);}
         catch(LinkageError e){module.error("Route runtime API unavailable: phase="+c.phase,e);finish(c,new IOException("系统音频接口不可用",e));}
     }
+    private void mediaAction(Claim c,Runnable action)throws IOException{
+        if(!pausedSessions.runIfCurrent(c.playbackSession,()->valid(c),action))
+            throw new IOException("耳机会话已变化，已取消媒体操作");
+    }
     private void finish(Claim c,Exception error){
+        boolean success=error==null&&valid(c);
         if(!claims.remove(c.device.getAddress(),c))return;
         module.info("Route completion: generation="+c.ticket.generation()+" phase="+c.phase+" playback="+c.playing+" error="+(error==null?"none":error.getMessage()));
-        String address=c.device.getAddress();boolean success=error==null&&!c.result.isDone()&&handoff.claiming(c.ticket)&&multiActive();
+        String address=c.device.getAddress();
         if(c.game!=null)gameGuard(c.device).settle(SystemClock.elapsedRealtime());
         if(success&&c.game!=null)gameState(c.device).selectedLocalGame();
         if(c.gameReturn)gameState(c.device).finish(c.gameReturnId,success);
         HandoffState.Ticket remote=handoff.finishClaim(c.ticket,success);
-        if(success){mediaReported.put(address,c.playing);if(c.routeOnly)pausedSessions.remove(address);else pausedSessions.remove(address,c.paused);routeNotices.remove(address);
+        if(success){mediaReported.put(address,c.playing);pausedSessions.clear(c.playbackSession);routeNotices.remove(address);
+            routingWorker.execute(()->restoreStem(c.device,c.socket));
             HandoffNotice notice=handoffNotices.computeIfAbsent(address,k->new HandoffNotice());
             queueHandoffNotice(c.device,notice.selectedLocal(audioSources.get(address),SystemClock.elapsedRealtime()));
             module.info((c.routeOnly?"Local live audio route confirmed: generation=":"Local MEDIA reclaim confirmed: generation=")+c.ticket.generation());Bundle result=status(address);result.putBoolean("routeConfirmed",true);result.putBoolean("audioReady",true);result.putBoolean("audioStreaming",c.streaming);result.putBoolean("routeOnly",c.routeOnly);c.result.complete(result);
         }else{
             if(error==null)error=new IOException("音频切换已取消");
             c.result.completeExceptionally(error);
-            if(remote!=null)yieldAudio(c.device,remote,"切换未完成，音频已让回另一台设备",!c.routeOnly);
+            if(remote!=null&&pausedSessions.current(c.playbackSession))yieldAudio(c.device,remote,"切换未完成，音频已让回另一台设备",!c.routeOnly);
             module.info("Route transaction ended: generation="+c.ticket.generation()+" reason="+error.getMessage());
         }
     }
