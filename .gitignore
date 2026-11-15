@@ -7,6 +7,9 @@ local.properties
 
 # Local release and validation notes
 /UPDATE_NOTES.local.md
+/.workbuddy/
+/docs/dexkit-migration.md
+/docs/dexkit-fingerprint-results.txt
 
 # macOS metadata
 .DS_Store
