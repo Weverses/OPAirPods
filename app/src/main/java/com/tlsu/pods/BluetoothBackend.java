@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 final class BluetoothBackend extends Binder {
+    final CaseBattery caseBattery = new CaseBattery();
     private final ColorPodsModule module;
     private volatile Context context;
     private volatile Object manager;
@@ -175,6 +176,9 @@ final class BluetoothBackend extends Binder {
         if(sessions.containsKey(device.getAddress()))return true;
         try{return Boolean.TRUE.equals(Reflect.call(manager,"checkIsAirpodsDevice",new Class[]{BluetoothDevice.class},device));}
         catch(Exception ignored){return false;}
+    }
+    boolean currentReader(BluetoothDevice device, BluetoothSocket reader) {
+        return reader == null || sessions.get(device.getAddress()) == reader;
     }
     void packet(byte[] bytes, int length, BluetoothDevice device,BluetoothSocket reader) {
         if (device == null || !Routing.header(bytes, length)) return;
@@ -440,6 +444,7 @@ final class BluetoothBackend extends Binder {
     }
     synchronized void disconnected(BluetoothDevice device) {
         if (device == null) return;
+        caseBattery.disconnected(device.getAddress());
         pausedSessions.disconnected(device.getAddress());
         stemBindings.remove(device.getAddress());
         GameReturnState game=gameState(device);boolean retain=false;

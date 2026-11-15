@@ -9,6 +9,7 @@ public class HostTargetsTest {
     @Test public void obfuscatedTargetsUseDexKitOnly() {
         for (String key : new String[]{
                 HostTargets.UI_SUBPAGE_CLASS,
+                HostTargets.UI_CASE_BATTERY_VISIBLE,
                 HostTargets.UI_CAPSULE_PRODUCER_CLASS,
                 HostTargets.UI_CAPSULE_PRODUCER_PLAIN,
                 HostTargets.UI_CAPSULE_PRODUCER_INIT,

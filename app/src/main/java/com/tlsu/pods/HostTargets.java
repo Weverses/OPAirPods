@@ -55,6 +55,10 @@ final class HostTargets {
     static final String EXT_MANAGER_HANDLE = "ext.manager.handleSocket";
     static final String EXT_MANAGER_CLOSE = "ext.manager.closeSocket";
     static final String EXT_MANAGER_CONNECT = "ext.manager.connectSocket";
+    static final String EXT_MANAGER_BATTERY_UPDATE = "ext.manager.updateBatteryInfo";
+    static final String EXT_MANAGER_BATTERY_GET = "ext.manager.getBatteryInfo";
+    static final String EXT_MANAGER_BATTERY_NOTIFY = "ext.manager.notifyBatteryLevelChanged";
+    static final String EXT_MANAGER_POD_STATUS = "ext.manager.updatePodStatus";
     static final String EXT_MANAGER_INSTANCE = "ext.manager.instance";
     static final String EXT_MEDIA_CLASS = "ext.media.class";
     static final String EXT_MEDIA_SEND_PLAY = "ext.media.sendPlay";
@@ -72,6 +76,11 @@ final class HostTargets {
     static final String UI_ACTIVITY_INIT_TOOLBAR = "ui.activity.initToolbar";
     static final String UI_ACTIVITY_BACK_PRESSED = "ui.activity.onBackPressed";
     static final String UI_ACTIVITY_RESUME = "ui.activity.onResume";
+    static final String UI_ACTIVITY_BATTERY_UPDATE = "ui.activity.updateBatteryInfo";
+    static final String UI_CASE_BATTERY_VISIBLE = "ui.battery.caseVisible";
+    static final String UI_NOISE_SELECTION = "ui.noise.selection";
+    static final String UI_NOISE_SELECTED = "ui.noise.selected";
+    static final String UI_NOISE_ITEMS = "ui.noise.items";
     static final String UI_ACTIVITY_PREFERENCES_FRAGMENT = "ui.activity.preferencesFragment";
     static final String UI_SUBPAGE_CLASS = "ui.subpage.class";
     static final String UI_SUBPAGE_CREATE_PREFS = "ui.subpage.onCreatePreferences";
@@ -140,6 +149,10 @@ final class HostTargets {
         directMethod(EXT_MANAGER_HANDLE, DexKitHost.BLUETOOTH_EXT, MANAGER, "handleAirPodsSocket", new String[]{"android.bluetooth.BluetoothSocket", "android.bluetooth.BluetoothDevice"}, "void", 0);
         directMethod(EXT_MANAGER_CLOSE, DexKitHost.BLUETOOTH_EXT, MANAGER, "closeSocketForDevice", new String[]{"android.bluetooth.BluetoothDevice"}, "void", 0);
         directMethod(EXT_MANAGER_CONNECT, DexKitHost.BLUETOOTH_EXT, MANAGER, "connectToAirPodsSocket", new String[]{"android.bluetooth.BluetoothDevice"}, "void", 0);
+        directMethod(EXT_MANAGER_BATTERY_UPDATE, DexKitHost.BLUETOOTH_EXT, MANAGER, "updateBatteryInfo", new String[]{"android.bluetooth.BluetoothDevice", "boolean", "int", "int", "int", "int", "int", "int"}, "void", 0);
+        directMethod(EXT_MANAGER_BATTERY_GET, DexKitHost.BLUETOOTH_EXT, MANAGER, "getBatteryInfo", new String[]{"android.bluetooth.BluetoothDevice"}, "[I", 0);
+        directMethod(EXT_MANAGER_BATTERY_NOTIFY, DexKitHost.BLUETOOTH_EXT, MANAGER, "notifyBatteryLevelChanged", new String[]{"android.bluetooth.BluetoothDevice", "[I"}, "void", 0);
+        directMethod(EXT_MANAGER_POD_STATUS, DexKitHost.BLUETOOTH_EXT, MANAGER, "updatePodStatus", new String[]{"android.bluetooth.BluetoothDevice", "int", "int"}, "void", 0);
         directField(EXT_MANAGER_INSTANCE, DexKitHost.BLUETOOTH_EXT, MANAGER, "sInstance", MANAGER);
         directClass(EXT_MEDIA_CLASS, DexKitHost.BLUETOOTH_EXT, MEDIA);
         directMethod(EXT_MEDIA_SEND_PLAY, DexKitHost.BLUETOOTH_EXT, MEDIA, "sendPlay", NONE, "void", 0);
@@ -147,6 +160,19 @@ final class HostTargets {
 
         directClass(UI_FRAGMENT_CLASS, DexKitHost.MYDEVICES, FRAGMENT);
         directClass(UI_ACTIVITY_CLASS, DexKitHost.MYDEVICES, ACTIVITY);
+        directMethod(UI_ACTIVITY_BATTERY_UPDATE, DexKitHost.MYDEVICES, ACTIVITY, "updateBatteryInfo", new String[]{"[I"}, "void", 0);
+        fingerprintMethod(UI_CASE_BATTERY_VISIBLE, new String[]{"[I"}, "boolean", b -> {
+            var update = DexQueries.one(DexQueries.methods(b, new MethodMatcher().declaredClass(ACTIVITY)
+                    .name("updateBatteryInfo").paramTypes("int[]").returnType("void")));
+            // The case guard reads level index 2 and status index 5, comparing
+            // against DISCONNECTED (4). Resolve through the native caller graph.
+            return DexQueries.filter(DexQueries.methods(b, new MethodMatcher().paramTypes("int[]")
+                    .returnType("boolean").usingNumbers(2, 5, 4)), update.getInvokes()::contains);
+        });
+        String selector="com.oplus.mydevices.deviceui.devicecard.view.IconTextSelectorSettings";
+        directMethod(UI_NOISE_SELECTION,DexKitHost.MYDEVICES,selector,"setSelectedPosition",new String[]{"int"},"void",0);
+        directMethod(UI_NOISE_SELECTED,DexKitHost.MYDEVICES,selector,"getSelectedPosition",NONE,"int",0);
+        directMethod(UI_NOISE_ITEMS,DexKitHost.MYDEVICES,ACTIVITY,"getNoiseSelectorItems",NONE,"java.util.ArrayList",0);
         directMethod(UI_ACTIVITY_TOOLBAR_LAMBDA, DexKitHost.MYDEVICES, ACTIVITY,
                 "initToolbar$lambda$6$lambda$5", new String[]{ACTIVITY, "android.view.View"}, "void", 1);
         directMethod(UI_ACTIVITY_INIT_TOOLBAR, DexKitHost.MYDEVICES, ACTIVITY, "initToolbar", new String[]{"java.lang.String"}, "void", 0);

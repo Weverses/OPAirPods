@@ -19,6 +19,10 @@ public final class ColorPodsModule extends XposedModule {
     void info(String message) { log(Log.INFO, "ColorPods", message); }
     void error(String message, Throwable t) { log(Log.ERROR, "ColorPods", message, t); }
 
+    boolean currentBatteryReader(android.bluetooth.BluetoothDevice device) {
+        return backend.currentReader(device, readerSocket.get());
+    }
+
     @Override public void onModuleLoaded(ModuleLoadedParam param) {
         info("API " + getApiVersion() + " loaded in " + param.getProcessName());
     }
@@ -33,6 +37,8 @@ public final class ColorPodsModule extends XposedModule {
             DexKitHost.init(this, DexKitHost.MYDEVICES, loader, sourceDir);
             try { NativeUi.install(this, loader); }
             catch (Throwable e) { error("MyDevices UI adapter unavailable", e); }
+            try { CaseBatteryHooks.installUi(this, loader); }
+            catch (Throwable e) { error("Case battery UI adapter unavailable", e); }
             try { HostHandoffCapsule.install(this, loader); }
             catch (Throwable e) { error("Handoff capsule adapter unavailable", e); }
         }
@@ -125,6 +131,8 @@ public final class ColorPodsModule extends XposedModule {
         if (managerHooked || cls == null) return;
         managerHooked = true;
         ClassLoader host = cls.getClassLoader();
+        try { CaseBatteryHooks.installBluetooth(this, host, backend.caseBattery); }
+        catch (Throwable e) { error("Case battery adapter unavailable", e); }
         for (var ctor : cls.getDeclaredConstructors()) {
             try {
                 hook(ctor).intercept(chain -> {
