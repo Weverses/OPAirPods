@@ -28,6 +28,19 @@ final class NativeUi {
         preferencesFragmentName = HostTargets.memberName(HostTargets.UI_ACTIVITY_PREFERENCES_FRAGMENT, loader);
         if (preferencesFragmentName == null) throw new IllegalStateException("Host preferences fragment accessor unresolved");
 
+        hook(module,loader,HostTargets.UI_NOISE_SELECTION,chain->{
+            Object result=chain.proceed();
+            for(HostPreferences p:CONTROLLERS.values())p.listeningSelectorChanged((View)chain.getThisObject());
+            return result;
+        });
+        // Native selector rebuilds and clicks can inline its private selection
+        // setter. Deoptimize this small widget's callers so expansion is immediate.
+        Method selection=HostTargets.methodOrNull(HostTargets.UI_NOISE_SELECTION,loader);
+        if(selection!=null)for(Method caller:selection.getDeclaringClass().getDeclaredMethods()){
+            if(caller.equals(selection))continue;
+            try{module.deoptimize(caller);}catch(Throwable e){module.error("Selector caller deoptimization failed",e);}
+        }
+
         hook(module,loader,PreferenceTargets.BIND,chain->{
             Object result=chain.proceed();
             try{SystemSettingsSlider.bind(chain.getThisObject(),chain.getArg(0));}

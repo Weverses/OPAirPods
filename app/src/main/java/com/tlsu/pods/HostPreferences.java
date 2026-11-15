@@ -9,6 +9,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.AttributeSet;
+import android.view.View;
 import android.widget.Toast;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
@@ -46,6 +47,7 @@ final class HostPreferences {
     private final Map<String,Object> pageEntries=new HashMap<>();
     private final HostPageNavigation navigation;
     private final HostConnection connection;
+    private final AdaptiveStrengthSlider adaptiveStrength;
     private final Runnable refreshTask=this::refresh;
     private Object vendorRow,routeRow,multiRow,autoMediaRow,autoGameReturnRow,routeStatus,reverseRow,root;
     private Bundle snapshot=Bundle.EMPTY;
@@ -64,6 +66,7 @@ final class HostPreferences {
         bridge=new BridgeClient(activity);
         navigation=new HostPageNavigation(this,activity,loader,module);
         connection=new HostConnection(activity,module,this::connectionChanged);
+        adaptiveStrength=new AdaptiveStrengthSlider(activity,loader,value->sendControl(0x2e,AdaptiveStrength.command(value)));
     }
     private Object create(String name) throws Exception {
         Class<?> cls=Class.forName("com.coui.appcompat.preference."+name,true,loader);
@@ -200,7 +203,6 @@ final class HostPreferences {
         controlSwitch(experience,0x26);controlSwitch(experience,0x35);
         Object noise=category(listening,"cat_colorpods_noise","降噪与通透",200);
         controlSwitch(noise,0x1b);controlSwitch(noise,0x34);
-        Object adaptive=slider(noise,"colorpods_control_2e","自适应强度");controls.put(0x2e,adaptive);controlChange(adaptive,0x2e,v->new byte[]{(byte)(100-(Integer)v)});
         Object hearingEntry=category(listening,"cat_colorpods_hearing_entry","听力健康",300);
         Object hearingPage=page(hearingEntry,"hearing","听力辅助","大音量降低与助听器");
         Object actions=category(controlsPage,"cat_colorpods_actions","按压与长按",100);
@@ -292,8 +294,14 @@ final class HostPreferences {
         Object vm=Reflect.call(activity,"getViewModel",new Class[0]);BluetoothDevice d=(BluetoothDevice)Reflect.call(vm,"getBluetoothDevice",new Class[0]);return d==null?null:d.getAddress();
     }
     private Bundle request(){try{return BridgeClient.forDevice(address());}catch(Exception e){throw new IllegalStateException(e);}}
-    void start(){active=true;main.removeCallbacksAndMessages(null);connection.start();refresh();}
-    void stop(){active=false;attGeneration++;attLoading=false;attWasReady=false;attValues.clear();connection.stop();main.removeCallbacksAndMessages(null);}
+    void start(){active=true;main.removeCallbacksAndMessages(null);bindAdaptiveStrength();connection.start();refresh();}
+    void stop(){active=false;adaptiveStrength.detach();attGeneration++;attLoading=false;attWasReady=false;attValues.clear();connection.stop();main.removeCallbacksAndMessages(null);}
+    private void bindAdaptiveStrength(){try{adaptiveStrength.bind();}catch(Exception e){module.error("Adaptive strength binding failed",e);}}
+    void listeningSelectorChanged(View selector){
+        if(!alive())return;
+        int id=activity.getResources().getIdentifier("ll_operation_noise","id",activity.getPackageName());
+        if(activity.findViewById(id)==selector)bindAdaptiveStrength();
+    }
     void resume(){if(!active)start();main.post(this::connectionChanged);}
     private void connectionChanged(){
         if(!alive())return;connection.reconcile();
@@ -308,6 +316,7 @@ final class HostPreferences {
             Bundle r=result;String message=error;main.post(()->{if(!alive())return;if(r!=null){snapshot=r;connectionError=null;}else connectionError=message;try{update();}catch(Exception e){module.error("COUI update failed",e);}main.removeCallbacks(refreshTask);main.postDelayed(refreshTask,2500);});});
     }
     private void update() throws Exception {
+        bindAdaptiveStrength();
         int link=connection.state();
         boolean connected=link==ConnectionState.CONNECTED||(link==ConnectionState.UNKNOWN&&snapshot.getBoolean("connected"));
         boolean ready=link!=ConnectionState.DISCONNECTED&&snapshot.getBoolean("controlReady");long[] identity=snapshot.getLongArray("nativeStatus");
@@ -317,7 +326,7 @@ final class HostPreferences {
         Bundle c=snapshot.getBundle("controls");if(c==null)c=Bundle.EMPTY;
         Bundle pending=snapshot.getBundle("pendingControls");if(pending==null)pending=Bundle.EMPTY;
         Bundle updates=snapshot.getBundle("controlUpdates");if(updates==null)updates=Bundle.EMPTY;
-        long now=SystemClock.elapsedRealtime(),nextDeadline=Long.MAX_VALUE;
+        long now=SystemClock.elapsedRealtime(),nextDeadline=updateAdaptiveStrength(ready,c,pending,updates,now);
         main.removeCallbacks(confirmationTimeout);
         for(var entry:controls.entrySet()){
             int command=entry.getKey();Object row=entry.getValue();String key=Integer.toHexString(command);
@@ -350,7 +359,6 @@ final class HostPreferences {
             else if(command==0x3b){checked(row,known&&value[0]==1);summary(row,controlSummary(known?"根据日常使用习惯优化充电，延缓电池老化":"等待耳机回报设置",summaryState));}
             else if(command==0x24){call(row,"setValue",String.class,known?Integer.toString(value[1]&255):"");summary(row,controlSummary(known?controlLabel(row,command,value):"等待耳机回报设置",summaryState));}
             else if(switchRows.containsKey(row)){if(known)checked(row,command==0x2c?value.length>1&&value[0]==1&&value[1]==1:value[0]==1);if(command!=0x2c)summary(row,"");}
-            else if(command==0x2e){if(known)sliders.get(row).value(100-(value[0]&255));summary(row,known?(100-(value[0]&255))+"%":"");}
             else{call(row,"setValue",String.class,known?Integer.toString(value[0]&255):"");summary(row,known?controlLabel(row,command,value):"");}
             if(state==ControlWrite.WAITING)nextDeadline=Math.min(nextDeadline,update.getLong("deadline"));
         }
@@ -378,10 +386,20 @@ final class HostPreferences {
         if(snapshot.getString("routeNotice")!=null)routeText+="\n"+snapshot.getString("routeNotice");summary(routeStatus,routeText);enabled(reverseRow,multi&&attReady&&!busy&&otherSource);
         summary(pageEntries.get("routing"),!multi?"未开启 · 在设备之间切换耳机音频":targets.isEmpty()?"已开启 · 尚未发现其他设备":snapshot.getInt("audioSourceType")==0?"已开启 · 当前无音频播放":"音频来源："+(source!=null&&source.equals(self)?"此手机":types.getString(source,"另一台设备")));
     }
+    private long updateAdaptiveStrength(boolean ready,Bundle controls,Bundle pending,Bundle updates,long now){
+        Bundle update=updates.getBundle("2e");
+        int state=update==null?0:ControlWrite.waitingState(update.getInt("state"),update.getLong("deadline"),now);
+        byte[] value=ControlWrite.displayedValue(controls.getByteArray("2e"),update==null?null:update.getByteArray("expected"),state);
+        if(update==null&&pending.containsKey("2e"))value=pending.getByteArray("2e");
+        boolean sending=sendingControls.containsKey(0x2e);
+        if(sending)value=sendingControls.get(0x2e);
+        int strength=AdaptiveStrength.fromReport(value);
+        adaptiveStrength.update(strength,ready&&!busy&&!sending&&strength>=0,controlSummary("",sending?ControlWrite.WAITING:state));
+        return state==ControlWrite.WAITING?update.getLong("deadline"):Long.MAX_VALUE;
+    }
     private String controlLabel(Object row,int command,byte[] value) throws Exception {
         if(value==null||value.length==0)return "未知";
         if(switchRows.containsKey(row))return (command==0x2c?value.length>1&&value[0]==1&&value[1]==1:value[0]==1)?"开启":"关闭";
-        if(command==0x2e)return (100-(value[0]&255))+"%";
         String selected=Integer.toString(value[command==0x24?1:0]&255);Object[] labels=(Object[])targetField(PreferenceTargets.ENTRIES).get(row),values=(Object[])targetField(PreferenceTargets.VALUES).get(row);
         for(int i=0;i<values.length;i++)if(selected.equals(values[i].toString()))return labels[i].toString();
         return selected;
