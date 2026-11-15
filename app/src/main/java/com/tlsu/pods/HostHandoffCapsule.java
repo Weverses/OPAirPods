@@ -24,9 +24,11 @@ import io.github.libxposed.api.XposedInterface;
 /** Adapt only module-owned cards; all other native battery cards stay native. */
 final class HostHandoffCapsule {
     static final String ACTION="com.tlsu.pods.HANDOFF_NOTICE";
+    static final String MODE_ACTION="com.tlsu.pods.MODE_NOTICE";
     static final String RECEIVER="com.oplus.mydevices.receiver.AccountReceiver";
     private static final String CORE_RECEIVER="com.heytap.mydevices.plugin.airpods.noisereduction.NoiseReductionCommand";
     private static final String PREFIX="colorpods.handoff/";
+    private static final String MODE_PREFIX="colorpods.mode/";
     private static final ExecutorService IO=Executors.newSingleThreadExecutor(r->new Thread(r,"ColorPodsCapsule"));
     private static final ExecutorService ROUTES=Executors.newSingleThreadExecutor(r->new Thread(r,"ColorPodsCapsuleRoute"));
     private static final Handler MAIN=new Handler(Looper.getMainLooper());
@@ -43,6 +45,7 @@ final class HostHandoffCapsule {
         hookProducer(owner, host, HostTargets.UI_CAPSULE_PRODUCER_INIT, true);
         hook(owner, host, HostTargets.UI_CLICK_ACTIVE_BUTTON, chain -> {
             String id = (String) chain.getArg(0);
+            if (id!=null&&id.startsWith(MODE_PREFIX)) return null;
             if (!owned(id)) return chain.proceed();
             // A card click may arrive in another host process. Recover context
             // from the host Application instead of relying on receiver state.
@@ -71,7 +74,7 @@ final class HostHandoffCapsule {
                 else owner.info("Handoff capability resolved: " + key);
             }
         });
-        owner.info("Native handoff capsule hook installation attempted");
+        owner.info("Native handoff and listening mode capsule hook installation attempted: modeNoticeVersion=1");
     }
 
     private static void hook(ColorPodsModule owner, ClassLoader host, String key,
@@ -90,7 +93,8 @@ final class HostHandoffCapsule {
                                      boolean forward) {
         hook(owner, host, key, chain -> {
             Intent intent = (Intent) chain.getArg(1);
-            if (intent == null || !ACTION.equals(intent.getAction())) return chain.proceed();
+            if (intent == null || !ACTION.equals(intent.getAction())&&!MODE_ACTION.equals(intent.getAction())) return chain.proceed();
+            int operation=MODE_ACTION.equals(intent.getAction())?BridgeClient.MODE_NOTICE:BridgeClient.HANDOFF_NOTICE;
             Context app = ((Context) chain.getArg(0)).getApplicationContext();
             if (forward) {
                 // Bluetooth has the existing AccountReceiver permission. The
@@ -105,9 +109,10 @@ final class HostHandoffCapsule {
                 try {
                     if (!BluetoothAdapter.checkBluetoothAddress(address)) return;
                     Bundle request = BridgeClient.forDevice(address); request.putLong("noticeId", id);
-                    Bundle event = new BridgeClient(app).request(BridgeClient.HANDOFF_NOTICE, request);
+                    Bundle event = new BridgeClient(app).request(operation, request);
+                    event.putInt("noticeOperation",operation);
                     if (event.getBoolean("available")) MAIN.post(() -> deliver(app,address,event));
-                } catch (Exception e) { module.error("Handoff capsule delivery failed", e); }
+                } catch (Exception e) { module.error("Capsule delivery failed", e); }
                 finally { pending.finish(); }
             });
             return null;
@@ -132,7 +137,7 @@ final class HostHandoffCapsule {
         });
     }
 
-    private static boolean owned(String id) { return id != null && id.startsWith(PREFIX); }
+    private static boolean owned(String id) { return id != null && (id.startsWith(PREFIX)||id.startsWith(MODE_PREFIX)); }
     private static void decorate(JSONObject data,Object card)throws Exception{
         String title=(String)Reflect.call(card,"getTitle",new Class[0]);
         String content=(String)Reflect.call(card,"getSubTitle",new Class[0]);
@@ -161,11 +166,14 @@ final class HostHandoffCapsule {
     }
     private static void deliver(Context app,String address,Bundle event){
         long id=event.getLong("noticeId"),now=SystemClock.elapsedRealtime();
-        HandoffDelivery delivery=deliveries.computeIfAbsent(address,k->new HandoffDelivery());
-        if(delivery.needsAcknowledgement(id,now)){acknowledge(app,address,id,delivery);return;}
+        int operation=event.getInt("noticeOperation",BridgeClient.HANDOFF_NOTICE);
+        String prefix=operation==BridgeClient.MODE_NOTICE?MODE_PREFIX:PREFIX;
+        String cardId=prefix+address+"/"+id;
+        HandoffDelivery delivery=deliveries.computeIfAbsent(prefix+address,k->new HandoffDelivery());
+        if(delivery.needsAcknowledgement(id,now)){acknowledge(app,address,id,delivery,operation,cardId);return;}
         long attempt=delivery.begin(id,event.getLong("expiresAt"),now);
         if(attempt==0)return;
-        MAIN.postDelayed(()->hide(PREFIX+address+"/"+id),event.getLong("expiresAt")-now+1);
+        MAIN.postDelayed(()->hide(cardId),event.getLong("expiresAt")-now+1);
         try{
             Object helper=helper();
             Object current=currentCard(helper);
@@ -177,9 +185,9 @@ final class HostHandoffCapsule {
                 String kind=(String)Reflect.call(currentType,"getTypeName",new Class[0]);
                 if(cardPolicy.defer(current,showing,moduleCard,sameDevice,kind,SystemClock.elapsedRealtime())){
                     delivery.finish(id,attempt,false,SystemClock.elapsedRealtime());
-                    module.info("Handoff capsule deferred: id="+id+" showing="+showing+" sameDevice="+sameDevice+" kind="+kind);return;
+                    module.info("Capsule deferred: id="+id+" showing="+showing+" sameDevice="+sameDevice+" kind="+kind);return;
                 }
-                if(!moduleCard)module.info("Handoff capsule replacing native record: id="+id+" showing="+showing+" sameDevice="+sameDevice+" kind="+kind);
+                if(!moduleCard)module.info("Capsule replacing native record: id="+id+" showing="+showing+" sameDevice="+sameDevice+" kind="+kind);
             }
             Method lookup=target(HostTargets.UI_DEVICE_INFO);
             var utilsField=HostTargets.fieldOrNull(CapsuleTargets.UTILS,loader);
@@ -208,14 +216,14 @@ final class HostHandoffCapsule {
             Class<?> type=Class.forName("com.oplus.mydevices.domain.entities.linkage.CapsuleType",true,loader);
             Class<?> info=Class.forName("com.oplus.mydevices.domain.entities.linkage.CapsuleInfo",true,loader);
             Object card=info.getConstructor(String.class,String.class,String.class,String.class,String.class,String.class,type,String.class,List.class,Integer.class)
-                .newInstance(PREFIX+address+"/"+id,model,address,icon,name,content,type.getField(event.getBoolean("remote")?"SET_ACTIVE":"CONNECTED").get(null),"",List.of(),Integer.valueOf(1));
+                .newInstance(cardId,model,address,icon,name,content,type.getField(event.getBoolean("remote")?"SET_ACTIVE":"CONNECTED").get(null),"",List.of(),Integer.valueOf(1));
             Method start=target(HostTargets.UI_CAPSULE_START);
             Class<?> callbackType=start.getParameterTypes()[1];
             // The host forwards the system's asynchronous decision through a
             // Kotlin Function3. Returning from start() alone proves no delivery.
             Object callback=Proxy.newProxyInstance(loader,new Class<?>[]{callbackType},(proxy,method,args)->{
                 if(method.getDeclaringClass()==Object.class)return switch(method.getName()){
-                    case "toString" -> "ColorPods handoff callback";
+                    case "toString" -> "ColorPods capsule callback";
                     case "hashCode" -> System.identityHashCode(proxy);
                     case "equals" -> proxy==args[0];
                     default -> null;
@@ -225,34 +233,34 @@ final class HostHandoffCapsule {
                     MAIN.post(()->{
                         if(!delivery.finish(id,attempt,accepted,SystemClock.elapsedRealtime()))return;
                         if(accepted){
-                            module.info("Native handoff capsule accepted: id="+id);
-                            acknowledge(app,address,id,delivery);
-                            MAIN.postDelayed(()->hide(PREFIX+address+"/"+id),event.getBoolean("remote")?8000:4000);
+                            module.info("Native capsule accepted: "+cardId);
+                            acknowledge(app,address,id,delivery,operation,cardId);
+                            MAIN.postDelayed(()->hide(cardId),event.getBoolean("remote")?8000:4000);
                         }else{
-                            module.info("Native handoff capsule rejected; will retry: id="+id);
-                            hide(PREFIX+address+"/"+id);
+                            module.info("Native capsule rejected; will retry: "+cardId);
+                            hide(cardId);
                         }
                     });
                 }
                 return null;
             });
             start.invoke(helper,card,callback);
-            module.info("Native handoff capsule requested: "+content);
+            module.info("Native capsule requested: "+content);
             MAIN.postDelayed(()->{
                 if(delivery.finish(id,attempt,false,SystemClock.elapsedRealtime())){
-                    module.info("Native handoff capsule decision timed out; will retry: id="+id);
-                    hide(PREFIX+address+"/"+id);
+                    module.info("Native capsule decision timed out; will retry: "+cardId);
+                    hide(cardId);
                 }
             },HandoffDelivery.CALLBACK_TIMEOUT_MS);
-        }catch(Exception e){delivery.finish(id,attempt,false,SystemClock.elapsedRealtime());module.error("Native handoff capsule deferred; will retry",e);}
+        }catch(Exception e){delivery.finish(id,attempt,false,SystemClock.elapsedRealtime());module.error("Native capsule deferred; will retry",e);}
     }
-    private static void acknowledge(Context app,String address,long id,HandoffDelivery delivery){
+    private static void acknowledge(Context app,String address,long id,HandoffDelivery delivery,int operation,String cardId){
         IO.execute(()->{
             try{
                 Bundle request=BridgeClient.forDevice(address);request.putLong("noticeId",id);request.putBoolean("acknowledge",true);
-                Bundle result=new BridgeClient(app).request(BridgeClient.HANDOFF_NOTICE,request);
-                MAIN.post(()->{if(result.getBoolean("acknowledged"))delivery.acknowledged(id);else hide(PREFIX+address+"/"+id);});
-            }catch(Exception e){module.error("Handoff capsule acknowledgement failed; will retry",e);}
+                Bundle result=new BridgeClient(app).request(operation,request);
+                MAIN.post(()->{if(result.getBoolean("acknowledged"))delivery.acknowledged(id);else hide(cardId);});
+            }catch(Exception e){module.error("Capsule acknowledgement failed; will retry",e);}
         });
     }
     private static void hide(String id){

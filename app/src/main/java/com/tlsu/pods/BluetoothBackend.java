@@ -40,6 +40,7 @@ final class BluetoothBackend extends Binder {
     private final Map<String, Map<String,String>> peerTypes = new ConcurrentHashMap<>();
     private final Map<String,String> routeNotices = new ConcurrentHashMap<>();
     private final Map<String,HandoffNotice> handoffNotices=new ConcurrentHashMap<>();
+    private final Map<String,ListeningModeNotice> modeNotices=new ConcurrentHashMap<>();
     private final Map<String,GameReturnState> gameReturns=new ConcurrentHashMap<>();
     private final Map<String,GameAutoplayGuard> gameAutoplay=new ConcurrentHashMap<>();
     private final java.util.Set<String> announced = ConcurrentHashMap.newKeySet();
@@ -221,6 +222,15 @@ final class BluetoothBackend extends Binder {
         }catch(IllegalArgumentException|IOException ignored){}
         if (!Protocol.isControl(bytes, length)) return;
         int command = bytes[6] & 255;
+        if(command==0x0d){
+            ListeningModeNotice.Event event=modeNotices.computeIfAbsent(device.getAddress(),k->new ListeningModeNotice())
+                .observe(bytes[7]&255,SystemClock.elapsedRealtime());
+            if(event!=null){
+                module.info("Listening mode change confirmed: id="+event.id()+" mode="+event.mode());
+                routingWorker.execute(()->publishModeNotice(device,event));
+            }
+            return;
+        }
         if (!Protocol.COMMANDS.containsKey(command)&&command!=6) return;
         if(command==0x17)module.info("AACP press-speed state received: "+Protocol.hex(bytes,7,11));
         synchronized (controlsLock) {
@@ -267,6 +277,16 @@ final class BluetoothBackend extends Binder {
             module.info("Handoff capsule event dispatched: id="+event.id()+" remote="+event.remote());
         }catch(Exception e){module.error("Handoff capsule dispatch failed",e);}
         routingWorker.schedule(()->publishHandoffNotice(device,event),HandoffNotice.RETRY_MS,java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+    private void publishModeNotice(BluetoothDevice device,ListeningModeNotice.Event event){
+        ListeningModeNotice state=modeNotices.get(device.getAddress());
+        if(state==null||state.pending(event.id(),SystemClock.elapsedRealtime())==null)return;
+        try{
+            context.sendBroadcast(new android.content.Intent(HostHandoffCapsule.MODE_ACTION)
+                .setClassName("com.heytap.mydevices",HostHandoffCapsule.RECEIVER)
+                .putExtra("address",device.getAddress()).putExtra("noticeId",event.id()));
+        }catch(Exception e){module.error("Listening mode capsule dispatch failed",e);}
+        routingWorker.schedule(()->publishModeNotice(device,event),HandoffNotice.RETRY_MS,java.util.concurrent.TimeUnit.MILLISECONDS);
     }
     synchronized void sessionOpened(BluetoothDevice device,BluetoothSocket socket){
         BluetoothSocket previous=sessions.get(device.getAddress());if(previous==socket)return;
@@ -389,6 +409,7 @@ final class BluetoothBackend extends Binder {
         validationClaims.remove(device.getAddress());peerReports.remove(device.getAddress());mediaReported.remove(device.getAddress());openedAt.remove(device.getAddress());peers.remove(device.getAddress());peerRecords.remove(device.getAddress());sourceSequences.remove(device.getAddress()); audioSources.remove(device.getAddress());
         sourceTypes.remove(device.getAddress());peerTypes.remove(device.getAddress());routeNotices.remove(device.getAddress());announced.removeIf(key->key.startsWith(device.getAddress()+"/"));
         HandoffNotice notice=handoffNotices.get(device.getAddress());if(notice!=null)notice.disconnected();
+        ListeningModeNotice modeNotice=modeNotices.get(device.getAddress());if(modeNotice!=null)modeNotice.disconnected();
         if(retain){
             long id=game.controlLost(SystemClock.elapsedRealtime());gameGuard(device).arm(game.target(),SystemClock.elapsedRealtime());
             routingWorker.schedule(()->watchGameReturn(device,id),500,java.util.concurrent.TimeUnit.MILLISECONDS);
@@ -524,6 +545,9 @@ final class BluetoothBackend extends Binder {
     private Bundle status(String address) {
         Bundle result = new Bundle(); result.putBoolean("manager", manager != null);
         result.putInt("controlConfirmationVersion",1);result.putInt("routingVersion",2);result.putInt("handoffNoticeVersion",2);result.putInt("gameReturnVersion",6);
+        result.putInt("listeningModeNoticeVersion",1);
+        ListeningModeNotice modeNotice=address==null?null:modeNotices.get(address);
+        result.putInt("listeningMode",modeNotice==null?0:modeNotice.mode());
         result.putBoolean("native", nativeLoaded);
         if (nativeLoaded) result.putLongArray("nativeStatus", NativeBridge.status());
         result.putBoolean("multipoint",context!=null&&context.getSharedPreferences("colorpods",0).getBoolean("multipoint",true));
@@ -583,7 +607,7 @@ final class BluetoothBackend extends Binder {
     }
     @Override protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) {
         if (code == INTERFACE_TRANSACTION) { reply.writeString(BridgeClient.DESCRIPTOR); return true; }
-        if (code < BridgeClient.STATUS || code > BridgeClient.HANDOFF_NOTICE) return false;
+        if (code < BridgeClient.STATUS || code > BridgeClient.MODE_NOTICE) return false;
         data.enforceInterface(BridgeClient.DESCRIPTOR);
         Context c = context;
         if (c == null || !mayControl(c, Binder.getCallingUid())) throw new SecurityException("Untrusted Bluetooth bridge caller");
@@ -658,6 +682,20 @@ final class BluetoothBackend extends Binder {
                         }catch(IOException ignored){}
                     });
                     if(key.equals("multipoint")){announced.clear();if(value)announce(device(address));else handoffNotices.values().forEach(HandoffNotice::reset);}result=status(address);
+                }
+                case BridgeClient.MODE_NOTICE -> {
+                    ListeningModeNotice state=modeNotices.get(address);
+                    long id=request.getLong("noticeId"),now=SystemClock.elapsedRealtime();
+                    if(request.getBoolean("acknowledge")){
+                        result.putBoolean("acknowledged",state!=null&&state.acknowledge(id,now));
+                        break;
+                    }
+                    ListeningModeNotice.Event event=state==null?null:state.pending(id,now);
+                    if(event!=null){
+                        result.putBoolean("available",true);result.putLong("noticeId",event.id());
+                        result.putLong("expiresAt",event.at()+HandoffNotice.MAX_AGE_MS);
+                        result.putString("title",ListeningModeNotice.title(event.mode()));
+                    }
                 }
                 case BridgeClient.HANDOFF_NOTICE -> {
                     HandoffNotice state=handoffNotices.get(address);

@@ -68,7 +68,7 @@ public final class ColorPodsModule extends XposedModule {
 
         hookTarget(HostTargets.BT_STUB_ON_TRANSACT, loader, chain -> {
             int code = (int) chain.getArg(0) - BridgeClient.TRANSACTION_BASE;
-            if (code < BridgeClient.STATUS || code > BridgeClient.HANDOFF_NOTICE)
+            if (code < BridgeClient.STATUS || code > BridgeClient.MODE_NOTICE)
                 return chain.proceed();
             Object receiver = chain.getThisObject();
             // The enhancer belongs to the OEM extension jar, which is added

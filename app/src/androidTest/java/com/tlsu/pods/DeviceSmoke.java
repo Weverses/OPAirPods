@@ -22,7 +22,7 @@ public final class DeviceSmoke extends Instrumentation {
             if(statusOnly){
                 Bundle diagnostic=new Bundle();diagnostic.putBoolean("gameState",true);
                 Bundle base=bridge.request(BridgeClient.STATUS,diagnostic);
-                emit("PASS: Binder status response: manager="+base.getBoolean("manager")+" native="+base.getBoolean("native")+" noticeVersion="+base.getInt("handoffNoticeVersion"));
+                emit("PASS: Binder status response: manager="+base.getBoolean("manager")+" native="+base.getBoolean("native")+" noticeVersion="+base.getInt("handoffNoticeVersion")+" modeNoticeVersion="+base.getInt("listeningModeNoticeVersion"));
                 emit("Game return: version="+base.getInt("gameReturnVersion")+" enabled="+base.getBoolean("autoGameReturn")
                         +" foreground="+base.getBoolean("foregroundGame")+" players="+base.getInt("gamePlayers")
                         +" package="+base.getString("gamePackage","")+" detectionError="+base.getBoolean("gameDetectionError"));
@@ -41,7 +41,7 @@ public final class DeviceSmoke extends Instrumentation {
                     Bundle values=state.getBundle("controls");
                     emit("Device status: controlReady="+state.getBoolean("controlReady")+" connected="+state.getBoolean("connected")
                             +" acl="+Reflect.call(device,"isConnected",new Class[0])+" controls="+(values==null?0:values.size())
-                            +" detail="+state.getString("channelDetail","none"));
+                            +" listeningMode="+state.getInt("listeningMode")+" detail="+state.getString("channelDetail","none"));
                     emit("Game return candidate: pending="+state.getBoolean("gameReturnPending")+" returning="+state.getBoolean("gameReturning"));
                     ready|=state.getBoolean("controlReady");
                     if(state.getBoolean("controlReady"))emit("Ready device: "+device.getAddress());

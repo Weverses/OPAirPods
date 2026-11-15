@@ -12,6 +12,7 @@ local.properties
 /docs/dexkit-fingerprint-results.txt
 /docs/game-return.md
 /docs/handoff-notices.md
+/docs/listening-mode-notices.md
 
 # macOS metadata
 .DS_Store

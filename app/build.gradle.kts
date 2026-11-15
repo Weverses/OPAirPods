@@ -26,8 +26,8 @@ android {
         applicationId = "com.tlsu.pods"
         minSdk = 33
         targetSdk = 36
-        versionCode = 30
-        versionName = "0.6.10"
+        versionCode = 31
+        versionName = "0.6.11"
         testInstrumentationRunner = "com.tlsu.pods.DeviceSmoke"
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags += "-std=c++20" } }
