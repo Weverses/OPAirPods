@@ -2,24 +2,37 @@ package com.tlsu.pods;
 import android.app.Activity;
 import android.app.Instrumentation;
 import android.bluetooth.BluetoothAdapter;
-import android.content.Intent;
 import android.os.Bundle;
 import android.os.SystemClock;
 
-// Foreground instrumentation avoids ColorOS freezing a background test between
-// a temporary setting change and restoration. No exported debug entry points.
+// Run while the device is awake; ColorOS may freeze background instrumentation.
 public final class DeviceSmoke extends Instrumentation {
-    private boolean attOnly,doRouting,handoffTest,confirmationOnly,automatic;
+    private boolean attOnly,doRouting,handoffTest,confirmationOnly,automatic,statusOnly;
     private String probe;
     private int watch;
     private final StringBuilder report=new StringBuilder();
     private boolean failed;
-    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);if(arguments!=null){attOnly="true".equals(arguments.getString("attOnly"));doRouting="true".equals(arguments.getString("routing"));automatic="true".equals(arguments.getString("automatic"));probe=arguments.getString("probe");handoffTest="true".equals(arguments.getString("handoff"));confirmationOnly="true".equals(arguments.getString("confirmation"));watch=Integer.parseInt(arguments.getString("watch","0"));}start();}
+    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);if(arguments!=null){statusOnly="true".equals(arguments.getString("statusOnly"));attOnly="true".equals(arguments.getString("attOnly"));doRouting="true".equals(arguments.getString("routing"));automatic="true".equals(arguments.getString("automatic"));probe=arguments.getString("probe");handoffTest="true".equals(arguments.getString("handoff"));confirmationOnly="true".equals(arguments.getString("confirmation"));watch=Integer.parseInt(arguments.getString("watch","0"));}start();}
     private void emit(String value){report.append(value).append('\n');Bundle b=new Bundle();b.putString("stream",value+"\n");sendStatus(0,b);}
     @Override public void onStart(){
         try{
-            startActivitySync(new Intent(getTargetContext(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             BridgeClient bridge=new BridgeClient(getTargetContext());String address=null;Bundle status=null;String error="";long until=SystemClock.elapsedRealtime()+30_000;
+            if(statusOnly){
+                Bundle base=bridge.request(BridgeClient.STATUS,new Bundle());
+                emit("PASS: Binder status response: manager="+base.getBoolean("manager")+" native="+base.getBoolean("native"));
+                boolean ready=false;
+                for(var device:BluetoothAdapter.getDefaultAdapter().getBondedDevices()){
+                    Bundle state=bridge.request(BridgeClient.STATUS,BridgeClient.forDevice(device.getAddress()));
+                    Bundle values=state.getBundle("controls");
+                    emit("Device status: controlReady="+state.getBoolean("controlReady")+" connected="+state.getBoolean("connected")
+                            +" acl="+Reflect.call(device,"isConnected",new Class[0])+" controls="+(values==null?0:values.size())
+                            +" detail="+state.getString("channelDetail","none"));
+                    ready|=state.getBoolean("controlReady");
+                    if(state.getBoolean("controlReady"))emit("Ready device: "+device.getAddress());
+                }
+                if(!ready)throw new AssertionError("No connected OEM control channel");
+                emit("PASS: native control channel available; no settings or routing writes");return;
+            }
             emit("Waiting for OEM AirPods channel and initial settings");
             while(address==null&&SystemClock.elapsedRealtime()<until){
                 for(var device:BluetoothAdapter.getDefaultAdapter().getBondedDevices())try{

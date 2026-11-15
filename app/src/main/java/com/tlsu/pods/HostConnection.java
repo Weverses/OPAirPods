@@ -14,6 +14,8 @@ import android.content.IntentFilter;
 import android.view.View;
 import java.util.HashMap;
 import java.util.Map;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 
 /** Reconcile the host's cached connection state without connecting or claiming audio. */
 final class HostConnection {
@@ -86,8 +88,16 @@ final class HostConnection {
             if(!java.util.Objects.equals(original,resolved)){
                 // Use the native transition to update preferences and battery
                 // observation together, for this device only.
-                Object manager=Reflect.field(vm,"bluetoothManager");
-                Reflect.call(manager,"i0",new Class[]{String.class,BluetoothDevice.class},resolved,device);
+                Method update=HostTargets.methodOrNull(HostTargets.UI_CONNECTION_UPDATE,activity.getClassLoader());
+                if(update==null)throw new NoSuchMethodException("Connection transition target unresolved");
+                Object manager=null;
+                for(Class<?> type=vm.getClass();type!=null;type=type.getSuperclass())
+                    for(var field:type.getDeclaredFields())if(!Modifier.isStatic(field.getModifiers())&&update.getDeclaringClass().isAssignableFrom(field.getType())){
+                        field.setAccessible(true);Object candidate=field.get(vm);
+                        if(candidate!=null){if(manager!=null)throw new IllegalStateException("Ambiguous Bluetooth manager");manager=candidate;}
+                    }
+                if(manager==null)throw new IllegalStateException("Bluetooth manager unavailable");
+                update.invoke(manager,resolved,device);
                 module.info("Reconciled host connection: "+original+" -> "+resolved);
             }
             // Initial profile callbacks can run before the activity registers

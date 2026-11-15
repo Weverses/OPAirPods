@@ -1,76 +1,133 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package com.tlsu.pods;
 
-import android.os.Bundle;
 import android.app.Activity;
+import android.os.Bundle;
 import android.view.View;
+
+import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
 
+import io.github.libxposed.api.XposedInterface;
+
 final class NativeUi {
     private static final Map<Object, HostPreferences> CONTROLLERS = new HashMap<>();
+    private static String activityName;
+    private static String preferencesFragmentName;
+
     private NativeUi() {}
-    static void install(ColorPodsModule module, ClassLoader loader) throws ReflectiveOperationException {
-        Class<?> fragment = Class.forName("com.heytap.mydevices.plugin.airpods.ui.AirpodsSettingPreferencesFragment", false, loader);
-        Class<?> activity = Class.forName("com.heytap.mydevices.plugin.airpods.ui.AirpodsSettingActivity", false, loader);
+
+    static void install(ColorPodsModule module, ClassLoader loader) {
+        Class<?> fragment = HostTargets.typeOrNull(HostTargets.UI_FRAGMENT_CLASS, loader);
+        Class<?> activity = HostTargets.typeOrNull(HostTargets.UI_ACTIVITY_CLASS, loader);
+        if (fragment == null || activity == null) {
+            throw new IllegalStateException("Host AirPods UI classes not resolved");
+        }
+        activityName = activity.getName();
+        preferencesFragmentName = HostTargets.memberName(HostTargets.UI_ACTIVITY_PREFERENCES_FRAGMENT, loader);
+        if (preferencesFragmentName == null) throw new IllegalStateException("Host preferences fragment accessor unresolved");
+
         // Native observers keep their original preference objects even while
         // another host fragment displays one of the feature pages.
-        module.hook(Reflect.method(fragment,"findPreference",CharSequence.class)).intercept(chain -> {
-            HostPreferences p=CONTROLLERS.get(chain.getThisObject());
-            return p==null?chain.proceed():p.findPreference((CharSequence)chain.getArg(0));
+        hook(module, loader, HostTargets.UI_FRAGMENT_FIND_PREFERENCE, chain -> {
+            HostPreferences p = CONTROLLERS.get(chain.getThisObject());
+            return p == null ? chain.proceed() : p.findPreference((CharSequence) chain.getArg(0));
         });
-        module.hook(Reflect.method(activity,"initToolbar$lambda$6$lambda$5",activity,View.class)).intercept(chain -> {
-            return back((Activity)chain.getArg(0))?null:chain.proceed();
-        });
+        hook(module, loader, HostTargets.UI_ACTIVITY_TOOLBAR_LAMBDA, chain ->
+                back((Activity) chain.getArg(0)) ? null : chain.proceed());
         // Gesture back is handled by the host FragmentManager's native stack.
-        module.hook(Reflect.method(activity,"onBackPressed")).intercept(chain -> {
-            return back((Activity)chain.getThisObject())?null:chain.proceed();
-        });
-        module.hook(Reflect.method(activity,"onResume")).intercept(chain -> {
-            Object result=chain.proceed();
-            Object home=Reflect.call(chain.getThisObject(),"preferencesFragment",new Class[0]);
-            HostPreferences p=CONTROLLERS.get(home);if(p!=null)p.resume();return result;
-        });
-        Class<?> page=Class.forName("aa.rc",false,loader);
-        module.hook(Reflect.method(page,"onCreatePreferences",Bundle.class,String.class)).intercept(chain -> {
-            Object result=chain.proceed();HostPreferences p=pageOwner(chain.getThisObject());
-            if(p!=null)p.navigation().prepare(chain.getThisObject());return result;
-        });
-        module.hook(Reflect.method(page,"onViewCreated",View.class,Bundle.class)).intercept(chain -> {
-            Object result=chain.proceed();HostPreferences p=pageOwner(chain.getThisObject());
-            if(p!=null)p.navigation().viewCreated(chain.getThisObject(),(View)chain.getArg(0));return result;
-        });
-        module.hook(Reflect.method(page,"onDestroyView")).intercept(chain -> {
-            HostPreferences p=pageOwner(chain.getThisObject());Object result=chain.proceed();
-            if(p!=null)p.navigation().viewDestroyed();return result;
-        });
-        module.hook(Reflect.method(fragment,"onCreatePreferences",Bundle.class,String.class)).intercept(chain -> {
-            Object result=chain.proceed();
-            try { HostPreferences old=CONTROLLERS.remove(chain.getThisObject());if(old!=null)old.stop();HostPreferences p=new HostPreferences(chain.getThisObject(),loader,module);p.inject();CONTROLLERS.put(chain.getThisObject(),p); }
-            catch(Throwable e){module.error("COUI preference injection failed",e);}
+        hook(module, loader, HostTargets.UI_ACTIVITY_BACK_PRESSED, chain ->
+                back((Activity) chain.getThisObject()) ? null : chain.proceed());
+        hook(module, loader, HostTargets.UI_ACTIVITY_RESUME, chain -> {
+            Object result = chain.proceed();
+            Object home = preferencesFragment(chain.getThisObject());
+            HostPreferences p = CONTROLLERS.get(home);
+            if (p != null) p.resume();
             return result;
         });
-        module.hook(Reflect.method(fragment,"onViewCreated",View.class,Bundle.class)).intercept(chain -> {
-            Object result=chain.proceed();HostPreferences p=CONTROLLERS.get(chain.getThisObject());if(p!=null)p.start();return result;
+        hook(module, loader, HostTargets.UI_SUBPAGE_CREATE_PREFS, chain -> {
+            Object result = chain.proceed();
+            HostPreferences p = pageOwner(chain.getThisObject());
+            if (p != null) p.navigation().prepare(chain.getThisObject());
+            return result;
         });
-        module.hook(Reflect.method(fragment,"onDestroyView")).intercept(chain -> {
-            HostPreferences p=CONTROLLERS.get(chain.getThisObject());if(p!=null)p.stop();return chain.proceed();
+        hook(module, loader, HostTargets.UI_SUBPAGE_VIEW_CREATED, chain -> {
+            Object result = chain.proceed();
+            HostPreferences p = pageOwner(chain.getThisObject());
+            if (p != null) p.navigation().viewCreated(chain.getThisObject(), (View) chain.getArg(0));
+            return result;
         });
-        module.hook(Reflect.method(fragment,"onDestroy")).intercept(chain -> {
-            HostPreferences p=CONTROLLERS.remove(chain.getThisObject());if(p!=null)p.stop();return chain.proceed();
+        hook(module, loader, HostTargets.UI_SUBPAGE_DESTROY_VIEW, chain -> {
+            HostPreferences p = pageOwner(chain.getThisObject());
+            Object result = chain.proceed();
+            if (p != null) p.navigation().viewDestroyed();
+            return result;
         });
-        for(var method:activity.getDeclaredMethods())if(method.getName().equals("initToolbar$lambda$6$lambda$5")||method.getName().equals("initToolbar"))module.deoptimize(method);
-        module.info("Host COUI preference lifecycle hooks installed");
+        hook(module, loader, HostTargets.UI_FRAGMENT_CREATE_PREFS, chain -> {
+            Object result = chain.proceed();
+            try {
+                HostPreferences old = CONTROLLERS.remove(chain.getThisObject());
+                if (old != null) old.stop();
+                HostPreferences p = new HostPreferences(chain.getThisObject(), loader, module);
+                p.inject();
+                CONTROLLERS.put(chain.getThisObject(), p);
+            } catch (Throwable e) { module.error("COUI preference injection failed", e); }
+            return result;
+        });
+        hook(module, loader, HostTargets.UI_FRAGMENT_VIEW_CREATED, chain -> {
+            Object result = chain.proceed();
+            HostPreferences p = CONTROLLERS.get(chain.getThisObject());
+            if (p != null) p.start();
+            return result;
+        });
+        hook(module, loader, HostTargets.UI_FRAGMENT_DESTROY_VIEW, chain -> {
+            HostPreferences p = CONTROLLERS.get(chain.getThisObject());
+            if (p != null) p.stop();
+            return chain.proceed();
+        });
+        hook(module, loader, HostTargets.UI_FRAGMENT_DESTROY, chain -> {
+            HostPreferences p = CONTROLLERS.remove(chain.getThisObject());
+            if (p != null) p.stop();
+            return chain.proceed();
+        });
+
+        String toolbarLambda = HostTargets.memberName(HostTargets.UI_ACTIVITY_TOOLBAR_LAMBDA, loader);
+        String initToolbar = HostTargets.memberName(HostTargets.UI_ACTIVITY_INIT_TOOLBAR, loader);
+        for (Method method : activity.getDeclaredMethods()) {
+            if (method.getName().equals(toolbarLambda) || method.getName().equals(initToolbar)) {
+                module.deoptimize(method);
+            }
+        }
+        module.info("Host COUI preference hook installation attempted");
     }
-    private static HostPreferences pageOwner(Object fragment)throws Exception{
-        if(HostPageNavigation.pageKey(fragment)==null)return null;
-        Activity activity=(Activity)Reflect.call(fragment,"getActivity",new Class[0]);
-        if(activity==null||!activity.getClass().getName().equals("com.heytap.mydevices.plugin.airpods.ui.AirpodsSettingActivity"))return null;
-        return CONTROLLERS.get(Reflect.call(activity,"preferencesFragment",new Class[0]));
+
+    private static void hook(ColorPodsModule module, ClassLoader loader, String key,
+                             XposedInterface.Hooker hooker) {
+        try {
+            Method method = HostTargets.methodOrNull(key, loader);
+            if (method == null) {
+                module.error("UI hook target unresolved: " + key, new NoSuchMethodException(key));
+                return;
+            }
+            module.hook(method).intercept(hooker);
+        } catch (Throwable e) { module.error("UI hook " + key + " unavailable", e); }
     }
+
+    private static Object preferencesFragment(Object activity) throws Exception {
+        return Reflect.call(activity, preferencesFragmentName, new Class[0]);
+    }
+
+    private static HostPreferences pageOwner(Object fragment) throws Exception {
+        if (HostPageNavigation.pageKey(fragment) == null) return null;
+        Activity activity = (Activity) Reflect.call(fragment, "getActivity", new Class[0]);
+        if (activity == null || !activity.getClass().getName().equals(activityName)) return null;
+        return CONTROLLERS.get(preferencesFragment(activity));
+    }
+
     private static boolean back(Activity activity) throws Exception {
-        if(!activity.getClass().getName().equals("com.heytap.mydevices.plugin.airpods.ui.AirpodsSettingActivity"))return false;
-        Object fragment=Reflect.call(activity,"preferencesFragment",new Class[0]);
-        HostPreferences p=CONTROLLERS.get(fragment);return p!=null&&p.back();
+        if (!activity.getClass().getName().equals(activityName)) return false;
+        HostPreferences p = CONTROLLERS.get(preferencesFragment(activity));
+        return p != null && p.back();
     }
 }

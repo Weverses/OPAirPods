@@ -24,6 +24,12 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 
 Compile-only API: `io.github.libxposed:api:102.0.0`, https://github.com/libxposed/api. The runtime implementation is supplied by the installed Xposed framework; the API JAR is not bundled in this module.
 
+## DexKit
+
+Runtime dependency: `org.luckypray:dexkit:2.3.0`, https://github.com/LuckyPray/DexKit. Copyright (C) LuckyPray and contributors. Dual-licensed under **LGPL-3.0-or-later** and **Apache-2.0**; this module uses it under LGPL-3.0-or-later. Source and license texts are available at the upstream repository.
+
+The library (Java bindings plus `libdexkit.so` for arm64-v8a) is bundled unmodified in the APK and is used at runtime to locate host classes, methods and fields by dex fingerprints. It is dynamically loaded as a separate shared library; ColorPods does not statically link against it. Its transitive runtime dependencies are `com.google.flatbuffers:flatbuffers-java:23.5.26`, `dev.rikka.ndk.thirdparty:cxx:1.2.0` and `org.jetbrains.kotlin:kotlin-stdlib:1.5.0`.
+
 
 ## Protocol cross-checks
 

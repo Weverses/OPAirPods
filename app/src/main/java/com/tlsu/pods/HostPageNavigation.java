@@ -15,15 +15,26 @@ final class HostPageNavigation {
     private final Activity activity;
     private final ColorPodsModule module;
     private final ClassLoader loader;
-    private final Class<?> fragmentClass,screenClass,managerClass;
+    private final Class<?> screenClass;
+    private final java.lang.reflect.Method attachManager;
+    private final java.lang.reflect.Method fragmentsGetter;
     private boolean opening;
     private Integer homeAccessibility;
 
-    HostPageNavigation(HostPreferences owner,Activity activity,ClassLoader loader,ColorPodsModule module)throws ClassNotFoundException{
+    HostPageNavigation(HostPreferences owner,Activity activity,ClassLoader loader,ColorPodsModule module)throws ReflectiveOperationException{
         this.owner=owner;this.activity=activity;this.loader=loader;this.module=module;
-        fragmentClass=Class.forName("androidx.fragment.app.Fragment",false,loader);
         screenClass=Class.forName("androidx.preference.PreferenceScreen",false,loader);
-        managerClass=Class.forName("androidx.preference.e",false,loader);
+        Class<?> hostFragment=HostTargets.typeOrNull(HostTargets.UI_FRAGMENT_CLASS,loader);
+        if(hostFragment==null)throw new ClassNotFoundException("Host preference fragment unavailable");
+        attachManager=target(NavigationTargets.ATTACH);
+        fragmentsGetter=target(NavigationTargets.FRAGMENTS);
+        for(String key:new String[]{NavigationTargets.SAVED,NavigationTargets.BEGIN,NavigationTargets.ANIMATIONS,
+                NavigationTargets.HIDE,NavigationTargets.ADD,NavigationTargets.BACKSTACK,NavigationTargets.COMMIT,NavigationTargets.POP})target(key);
+    }
+    private java.lang.reflect.Method target(String key)throws NoSuchMethodException{
+        var method=HostTargets.methodOrNull(key,loader);
+        if(method==null)throw new NoSuchMethodException("Unresolved navigation target: "+key);
+        return method;
     }
     static String pageKey(Object fragment)throws ReflectiveOperationException{
         Bundle args=(Bundle)Reflect.call(fragment,"getArguments",new Class[0]);
@@ -31,7 +42,7 @@ final class HostPageNavigation {
     }
     private Object manager()throws ReflectiveOperationException{return Reflect.call(activity,"getSupportFragmentManager",new Class[0]);}
     private Object top(Object manager)throws ReflectiveOperationException{
-        List<?> fragments=(List<?>)Reflect.call(manager,"u0",new Class[0]);
+        List<?> fragments=(List<?>)fragmentsGetter.invoke(manager);
         for(int i=fragments.size()-1;i>=0;i--){Object fragment=fragments.get(i);
             if(pageKey(fragment)!=null&&!Boolean.TRUE.equals(Reflect.call(fragment,"isHidden",new Class[0])))return fragment;
         }
@@ -45,24 +56,26 @@ final class HostPageNavigation {
         if(opening||owner.pageScreen(key)==null)return;
         try{
             Object manager=manager(),previous=top(manager);
-            if(Boolean.TRUE.equals(Reflect.call(manager,"P0",new Class[0])))return;
+            if(Boolean.TRUE.equals(target(NavigationTargets.SAVED).invoke(manager)))return;
             if(previous!=null&&key.equals(pageKey(previous)))return;
-            Object page=Class.forName("aa.rc",true,loader).getConstructor().newInstance();
+            Class<?> pageClass = HostTargets.typeOrNull(HostTargets.UI_SUBPAGE_CLASS, loader);
+            if (pageClass == null) throw new ClassNotFoundException("DexKit subpage target unresolved");
+            Object page = pageClass.getConstructor().newInstance();
             Bundle args=new Bundle();args.putString(ARG_PAGE,key);
             Reflect.call(page,"setArguments",new Class[]{Bundle.class},args);
-            Object transaction=Reflect.call(manager,"n",new Class[0]);
-            Reflect.call(transaction,"s",new Class[]{int.class,int.class,int.class,int.class},
+            Object transaction=target(NavigationTargets.BEGIN).invoke(manager);
+            target(NavigationTargets.ANIMATIONS).invoke(transaction,
                 resource("anim","coui_open_slide_enter"),resource("anim","coui_open_slide_exit_noalpha"),
                 resource("anim","coui_close_slide_enter_noalpha"),resource("anim","coui_close_slide_exit"));
-            if(previous!=null)Reflect.call(transaction,"n",new Class[]{fragmentClass},previous);
-            Reflect.call(transaction,"c",new Class[]{int.class,fragmentClass,String.class},android.R.id.content,page,"colorpods.page."+key);
-            Reflect.call(transaction,"g",new Class[]{String.class},"colorpods.page."+key);
-            opening=true;Reflect.call(transaction,"h",new Class[0]);
+            if(previous!=null)target(NavigationTargets.HIDE).invoke(transaction,previous);
+            target(NavigationTargets.ADD).invoke(transaction,android.R.id.content,page,"colorpods.page."+key);
+            target(NavigationTargets.BACKSTACK).invoke(transaction,"colorpods.page."+key);
+            opening=true;target(NavigationTargets.COMMIT).invoke(transaction);
         }catch(Exception e){opening=false;module.error("COUI page open failed",e);}
     }
     boolean back(){
         if(opening)return true;
-        try{Object manager=manager();if(top(manager)==null)return false;Reflect.call(manager,"d1",new Class[0]);return true;}
+        try{Object manager=manager();if(top(manager)==null)return false;target(NavigationTargets.POP).invoke(manager);return true;}
         catch(Exception e){module.error("COUI page back failed",e);return true;}
     }
     void prepare(Object page)throws Exception{
@@ -74,10 +87,13 @@ final class HostPageNavigation {
         Reflect.call(page,"setPreferenceScreen",new Class[]{screenClass},screen);
     }
     private void attach(Object preference,Object manager)throws Exception{
-        Reflect.call(preference,"X",new Class[]{managerClass},manager);
+        attachManager.invoke(preference,manager);
         if(Class.forName("androidx.preference.PreferenceGroup",false,loader).isInstance(preference)){
-            int count=(Integer)Reflect.call(preference,"b1",new Class[0]);
-            for(int i=0;i<count;i++)attach(Reflect.call(preference,"a1",new Class[]{int.class},i),manager);
+            var countMethod=HostTargets.methodOrNull(HostTargets.UI_PREF_COUNT,loader);
+            var childMethod=HostTargets.methodOrNull(HostTargets.UI_PREF_CHILD,loader);
+            if(countMethod==null||childMethod==null)throw new NoSuchMethodException("Preference traversal unresolved");
+            int count=(Integer)countMethod.invoke(preference);
+            for(int i=0;i<count;i++)attach(childMethod.invoke(preference,i),manager);
         }
     }
     void viewCreated(Object page,View view)throws Exception{

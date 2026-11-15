@@ -425,8 +425,12 @@ final class BluetoothBackend extends Binder {
         // LOCAL_MAC_ADDRESS permission. Read its initialized AdapterProperties,
         // inside that same process, instead of using the redacted app API.
         try {
-            Class<?> serviceClass=Class.forName("com.android.bluetooth.btservice.AdapterService",false,context.getClassLoader());
-            var field=serviceClass.getDeclaredField("sAdapterService");field.setAccessible(true);Object service=field.get(null);
+            ClassLoader loader = context.getClassLoader();
+            Class<?> serviceClass = HostTargets.typeOrNull(HostTargets.BT_ADAPTER_SERVICE_CLASS, loader);
+            if (serviceClass == null) throw new IOException("DexKit AdapterService target unresolved");
+            java.lang.reflect.Field field = HostTargets.fieldOrNull(HostTargets.BT_ADAPTER_SERVICE_FIELD, loader);
+            if (field == null) throw new IOException("DexKit AdapterService field unresolved");
+            Object service = field.get(null);
             if(service==null)throw new IOException("系统蓝牙控制器尚未初始化");
             Object properties=Reflect.call(service,"getAdapterProperties",new Class[0]);
             byte[] bytes=(byte[])Reflect.field(properties,"mAddress");

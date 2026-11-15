@@ -45,13 +45,12 @@ final class HostPreferences {
     private boolean active,busy;
     private String lastError;
     private String connectionError;
-    private final Class<?> prefClass;
 
     HostPreferences(Object fragment,ClassLoader loader,ColorPodsModule module) throws Exception {
         this.fragment=fragment;this.loader=loader;this.module=module;
         activity=(Activity)Reflect.call(fragment,"getActivity",new Class[0]);
         if(activity==null)throw new IllegalStateException("Host activity unavailable");
-        bridge=new BridgeClient(activity);prefClass=Class.forName("androidx.preference.Preference",false,loader);
+        bridge=new BridgeClient(activity);
         navigation=new HostPageNavigation(this,activity,loader,module);
         connection=new HostConnection(activity,module,this::connectionChanged);
     }
@@ -61,34 +60,46 @@ final class HostPreferences {
         catch(NoSuchMethodException e){return cls.getConstructor(Context.class,AttributeSet.class).newInstance(activity,null);}
     }
     private void call(Object row,String name,Class<?> type,Object arg) throws Exception {Reflect.call(row,name,new Class[]{type},arg);}
-    private void setField(Object row,String name,Object value) throws Exception {
-        for(Class<?> c=row.getClass();c!=null;c=c.getSuperclass())try{var f=c.getDeclaredField(name);f.setAccessible(true);f.set(row,value);return;}catch(NoSuchFieldException ignored){}
-        throw new NoSuchFieldException(name);
+    private Object targetCall(Object instance,String key,Object... args)throws Exception{
+        var method=HostTargets.methodOrNull(key,loader);
+        if(method==null)throw new NoSuchMethodException("Unresolved host preference target: "+key);
+        return method.invoke(instance,args);
+    }
+    private java.lang.reflect.Field targetField(String key)throws NoSuchFieldException{
+        var field=HostTargets.fieldOrNull(key,loader);
+        if(field==null)throw new NoSuchFieldException("Unresolved preference field: "+key);
+        return field;
     }
     private Object add(Object parent,String kind,String key,String title) throws Exception {
-        Object row=create(kind);call(row,"D0",String.class,key);call(row,"O0",CharSequence.class,title);call(row,"J0",boolean.class,false);
-        if(!Boolean.TRUE.equals(Reflect.call(parent,"W0",new Class[]{prefClass},row)))throw new IllegalStateException("Host rejected preference "+key);
+        Object row=create(kind);targetCall(row,HostTargets.UI_PREF_KEY,key);targetCall(row,HostTargets.UI_PREF_TITLE,title);targetCall(row,PreferenceTargets.PERSISTENT,false);
+        if(!Boolean.TRUE.equals(targetCall(parent,HostTargets.UI_PREF_ADD,row)))throw new IllegalStateException("Host rejected preference "+key);
         return row;
     }
     private Object category(Object parent,String key,String title,int order) throws Exception {
-        Object row=add(parent,"COUIPreferenceCategory",key,title);call(row,"I0",int.class,order);return row;
+        Object row=add(parent,"COUIPreferenceCategory",key,title);targetCall(row,HostTargets.UI_PREF_ORDER,order);return row;
     }
-    private Object find(String key) throws Exception {return Reflect.call(root,"X0",new Class[]{CharSequence.class},key);}
-    Object findPreference(CharSequence key) throws Exception {return Reflect.call(root,"X0",new Class[]{CharSequence.class},key);}
+    private Object find(String key) throws Exception {return targetCall(root,HostTargets.UI_PREF_FIND,key);}
+    Object findPreference(CharSequence key) throws Exception {return targetCall(root,HostTargets.UI_PREF_FIND,key);}
+    private java.lang.reflect.Method parentGetter()throws NoSuchMethodException{
+        var method=HostTargets.methodOrNull(PreferenceTargets.PARENT,loader);
+        if(method==null)throw new NoSuchMethodException("Preference parent getter unresolved");
+        return method;
+    }
     private void move(Object row,Object parent,int order) throws Exception {
         if(row==null)return;
-        Object oldParent=Reflect.call(row,"B",new Class[0]);
-        Reflect.call(oldParent,"f1",new Class[]{prefClass},row);
-        call(row,"I0",int.class,order);
-        Reflect.call(parent,"W0",new Class[]{prefClass},row);
+        Object oldParent=parentGetter().invoke(row);
+        if(!Boolean.TRUE.equals(targetCall(oldParent,HostTargets.UI_PREF_REMOVE,row)))
+            throw new IllegalStateException("Host refused to remove preference");
+        targetCall(row,HostTargets.UI_PREF_ORDER,order);
+        targetCall(parent,HostTargets.UI_PREF_ADD,row);
     }
     private Object page(Object parent,String key,String title,String description) throws Exception {
         Object entry=add(parent,"COUIJumpPreference","colorpods_open_"+key,title);summary(entry,description);
         Object screen=Class.forName("androidx.preference.PreferenceScreen",true,loader)
             .getConstructor(Context.class,AttributeSet.class).newInstance(activity,null);
-        call(screen,"D0",String.class,"colorpods_page_"+key);call(screen,"J0",boolean.class,false);
-        call(screen,"P0",boolean.class,false);
-        Reflect.call(root,"W0",new Class[]{prefClass},screen);
+        targetCall(screen,HostTargets.UI_PREF_KEY,"colorpods_page_"+key);targetCall(screen,PreferenceTargets.PERSISTENT,false);
+        targetCall(screen,PreferenceTargets.VISIBLE,false);
+        targetCall(root,HostTargets.UI_PREF_ADD,screen);
         pages.put(key,screen);pageTitles.put(key,title);pageEntries.put(key,entry);
         click(entry,()->navigation.open(key));return screen;
     }
@@ -96,11 +107,15 @@ final class HostPreferences {
     HostPageNavigation navigation(){return navigation;}
     Object pageScreen(String key){return pages.get(key);}
     String pageTitle(String key){return pageTitles.get(key);}
-    private void summary(Object row,String text) throws Exception {call(row,"L0",CharSequence.class,text);}
-    private void enabled(Object row,boolean value) throws Exception {call(row,"x0",boolean.class,value);}
-    private void checked(Object row,boolean value) throws Exception {call(row,"W0",boolean.class,value);}
-    private Object listener(String name,java.util.function.Function<Object[],Object> action) throws Exception {
-        Class<?> type=Class.forName("androidx.preference.Preference$"+name,false,loader);
+    private void summary(Object row,String text) throws Exception {targetCall(row,HostTargets.UI_PREF_SUMMARY,text);}
+    private void enabled(Object row,boolean value) throws Exception {targetCall(row,PreferenceTargets.ENABLED,value);}
+    private void checked(Object row,boolean value) throws Exception {targetCall(row,PreferenceTargets.CHECKED,value);}
+    private java.lang.reflect.Method listenerSetter(boolean change)throws NoSuchMethodException{
+        var method=HostTargets.methodOrNull(change?PreferenceTargets.CHANGE:PreferenceTargets.CLICK,loader);
+        if(method==null)throw new NoSuchMethodException("Preference listener setter unresolved");
+        return method;
+    }
+    private Object listener(Class<?> type,java.util.function.Function<Object[],Object> action) throws Exception {
         return Proxy.newProxyInstance(loader,new Class[]{type},(proxy,method,args)->{
             if(method.getDeclaringClass()==Object.class)return switch(method.getName()){
                 case "toString"->"ColorPodsCOUIListener";case "hashCode"->System.identityHashCode(proxy);case "equals"->proxy==args[0];default->null;};
@@ -108,36 +123,36 @@ final class HostPreferences {
         });
     }
     private void click(Object row,Runnable action) throws Exception {
-        Object listener=listener("d",args->{action.run();return true;});
-        call(row,"H0",Class.forName("androidx.preference.Preference$d",false,loader),listener);
+        var setter=listenerSetter(false);Class<?> type=setter.getParameterTypes()[0];Object listener=listener(type,args->{action.run();return true;});
+        setter.invoke(row,listener);
     }
     private void change(Object row,java.util.function.Consumer<Object> action) throws Exception {
-        Object listener=listener("c",args->{action.accept(args[1]);return false;});
-        call(row,"G0",Class.forName("androidx.preference.Preference$c",false,loader),listener);
+        var setter=listenerSetter(true);Class<?> type=setter.getParameterTypes()[0];Object listener=listener(type,args->{action.accept(args[1]);return false;});
+        setter.invoke(row,listener);
     }
     private void controlChange(Object row,int command,java.util.function.Function<Object,byte[]> value) throws Exception {
         // Accept queued selections so the native switch does not undo its
         // checked state after our listener returns. Failed writes refresh it.
-        Object listener=listener("c",args->sendControl(command,value.apply(args[1])));
-        call(row,"G0",Class.forName("androidx.preference.Preference$c",false,loader),listener);
+        var setter=listenerSetter(true);Class<?> type=setter.getParameterTypes()[0];Object listener=listener(type,args->sendControl(command,value.apply(args[1])));
+        setter.invoke(row,listener);
     }
     private void entries(Object row,String[] names,String[] values) throws Exception {
-        if(java.util.Arrays.equals((Object[])Reflect.field(row,"X"),names)&&java.util.Arrays.equals((Object[])Reflect.field(row,"Y"),values))return;
-        setField(row,"X",names);setField(row,"Y",values);Reflect.call(row,"T",new Class[0]);
+        if(java.util.Arrays.equals((Object[])targetField(PreferenceTargets.ENTRIES).get(row),names)&&java.util.Arrays.equals((Object[])targetField(PreferenceTargets.VALUES).get(row),values))return;
+        targetField(PreferenceTargets.ENTRIES).set(row,names);targetField(PreferenceTargets.VALUES).set(row,values);targetCall(row,PreferenceTargets.NOTIFY);
     }
     private Object list(Object parent,String key,String title,String[] names,String[] values) throws Exception {
         Object row=add(parent,"COUIListPreference",key,title);entries(row,names,values);
-        setField(row,"R",title);setField(row,"V","取消");setField(row,"U","确定");
+        targetField(PreferenceTargets.DIALOG_TITLE).set(row,title);
         return row;
     }
     void inject() throws Exception {
-        long version=activity.getPackageManager().getPackageInfo("com.heytap.mydevices",0).getLongVersionCode();
-        if(version!=1725000)throw new IllegalStateException("Unsupported MyDevices version "+version);
+        HostUiCompatibility.verify(loader);
+        listenerSetter(false);listenerSetter(true);parentGetter();
         root=Reflect.call(fragment,"getPreferenceScreen",new Class[0]);
         if(find("cat_colorpods_home")!=null)return;
         String[] existing={"pref_airpods_spacer_before_disconnect","cat_airpods_disconnect","pref_airpods_bottom_disconnect_gap"};
         int[] orders={10000,10001,10002};
-        for(int i=0;i<existing.length;i++){Object row=Reflect.call(fragment,"findPreference",new Class[]{CharSequence.class},existing[i]);if(row!=null)call(row,"I0",int.class,orders[i]);}
+        for(int i=0;i<existing.length;i++){Object row=Reflect.call(fragment,"findPreference",new Class[]{CharSequence.class},existing[i]);if(row!=null)targetCall(row,HostTargets.UI_PREF_ORDER,orders[i]);}
         Object home=category(root,"cat_colorpods_home","耳机功能",0);
         Object listening=page(home,"listening","聆听体验","空间音频、降噪与通透、听力辅助");
         Object controlsPage=page(home,"controls","耳机操控","佩戴检测、按压与长按、音量滑动");
@@ -145,7 +160,7 @@ final class HostPreferences {
         Object morePage=page(home,"more","更多设置","麦克风、自动连接与高级设置");
         Object sound=find("cat_airpods_sound_quality");move(sound,listening,0);
         Object settings=find("cat_airpods_settings");move(settings,controlsPage,0);
-        if(settings!=null)call(settings,"O0",CharSequence.class,"佩戴检测");
+        if(settings!=null)targetCall(settings,HostTargets.UI_PREF_TITLE,"佩戴检测");
         Object experience=category(listening,"cat_colorpods_listening","智能聆听",100);
         move(find("pref_airpods_conversation_aware"),experience,-1);
         controlSwitch(experience,0x26);controlSwitch(experience,0x35);
@@ -177,7 +192,7 @@ final class HostPreferences {
         change(multiRow,value->{Bundle b=request();b.putBoolean("enabled",(Boolean)value);operation(BridgeClient.MULTIPOINT,b,r->{snapshot=r;});});
         autoMediaRow=add(routing,"COUISwitchPreference","colorpods_auto_media","手机播放时自动切回");
         change(autoMediaRow,value->{Bundle b=request();b.putBoolean("autoMedia",(Boolean)value);operation(BridgeClient.MULTIPOINT,b,r->{snapshot=r;});});
-        routeStatus=add(routing,"COUIPreference","colorpods_route_status","设备与音频来源");call(routeStatus,"K0",boolean.class,false);
+        routeStatus=add(routing,"COUIPreference","colorpods_route_status","设备与音频来源");targetCall(routeStatus,PreferenceTargets.SELECTABLE,false);
         routeRow=list(routing,"colorpods_route","将音频切回此手机",new String[0],new String[0]);
         change(routeRow,value->route(value.toString(),false));
         reverseRow=add(routing,"COUIJumpPreference","colorpods_route_reverse","撤销其他设备的切换");click(reverseRow,()->route(snapshot.getString("audioSource"),true));
@@ -191,7 +206,7 @@ final class HostPreferences {
         vendorRow=add(identity,"COUISwitchPreference","colorpods_vendor","以 Apple 设备身份连接");enabled(vendorRow,false);
         change(vendorRow,value->{Bundle b=request();b.putBoolean("enabled",(Boolean)value);operation(BridgeClient.VENDOR,b,r->{snapshot=r;lastError="身份设置已保存，请关闭再开启蓝牙后重新连接耳机";});});
         Object diagnostics=category(advancedPage,"cat_colorpods_diagnostics","连接诊断",100);
-        statusRow=add(diagnostics,"COUIPreference","colorpods_status","连接与设置状态");call(statusRow,"K0",boolean.class,false);
+        statusRow=add(diagnostics,"COUIPreference","colorpods_status","连接与设置状态");targetCall(statusRow,PreferenceTargets.SELECTABLE,false);
         reconnectRow=add(diagnostics,"COUIJumpPreference","colorpods_route_reconnect","恢复耳机控制连接");click(reconnectRow,()->{Bundle b=request();b.putBoolean("connectOnly",true);operation(BridgeClient.ROUTE,b,r->{snapshot=r;});});
         update();module.info("All settings inserted as host COUI preferences");
     }
@@ -274,8 +289,8 @@ final class HostPreferences {
         enabled(refreshControlsRow,ready&&!busy);
         boolean attReady=ready&&identity!=null&&identity[0]!=0&&identity[1]!=0&&identity[3]>0;
         enabled(transRead,attReady&&!busy);enabled(hearingRead,attReady&&!busy);
-        call(transRead,"O0",CharSequence.class,attValues.containsKey(AttCodec.TRANSPARENCY)&&attReady?"刷新耳机设置":"读取耳机设置");
-        call(hearingRead,"O0",CharSequence.class,attValues.containsKey(AttCodec.HEARING_AID)&&attReady?"刷新耳机设置":"读取耳机设置");
+        targetCall(transRead,HostTargets.UI_PREF_TITLE,attValues.containsKey(AttCodec.TRANSPARENCY)&&attReady?"刷新耳机设置":"读取耳机设置");
+        targetCall(hearingRead,HostTargets.UI_PREF_TITLE,attValues.containsKey(AttCodec.HEARING_AID)&&attReady?"刷新耳机设置":"读取耳机设置");
         if(!ready)attValues.clear();
         for(var entry:attRows.entrySet()){
             String[] parts=entry.getKey().split(":");int handle=Integer.parseInt(parts[0]);String field=parts[1];Object row=entry.getValue();byte[] data=attValues.get(handle);
@@ -300,7 +315,7 @@ final class HostPreferences {
     private String controlLabel(Object row,int command,byte[] value) throws Exception {
         if(value==null||value.length==0)return "未知";
         if(switchRows.containsKey(row))return (command==0x2c?value.length>1&&value[0]==1&&value[1]==1:value[0]==1)?"开启":"关闭";
-        String selected=Integer.toString(value[0]&255);Object[] labels=(Object[])Reflect.field(row,"X"),values=(Object[])Reflect.field(row,"Y");
+        String selected=Integer.toString(value[0]&255);Object[] labels=(Object[])targetField(PreferenceTargets.ENTRIES).get(row),values=(Object[])targetField(PreferenceTargets.VALUES).get(row);
         for(int i=0;i<values.length;i++)if(selected.equals(values[i].toString()))return labels[i].toString();
         return selected;
     }
