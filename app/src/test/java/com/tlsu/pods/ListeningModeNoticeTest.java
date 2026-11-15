@@ -18,12 +18,12 @@ public class ListeningModeNoticeTest {
         assertNull(state.observe(2,300));assertNull(state.observe(5,400));
         assertNull(state.observe(2,500));assertNotNull(state.observe(4,600));
     }
-    @Test public void eachListeningModeHasTheRequestedSubtitle(){
+    @Test public void eachListeningModeUsesItsNameAsTheShortTitle(){
         ListeningModeNotice state=new ListeningModeNotice();state.observe(4,100);
         String[] names={"关闭","降噪","通透","自适应"};
         for(int mode=1;mode<=4;mode++){
             var event=state.observe(mode,100+mode);
-            assertEquals("已切换至 "+names[mode-1],ListeningModeNotice.title(event.mode()));
+            assertEquals(names[mode-1],ListeningModeNotice.title(event.mode()));
         }
     }
     @Test public void failedDeliveryCanRetryUntilAcknowledged(){
