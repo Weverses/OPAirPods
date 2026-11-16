@@ -2,6 +2,66 @@ package com.tlsu.pods;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public class HandoffStateTest {
+    @Test public void pausingBeforeAnAutomaticClaimWasSentDoesNotYieldToAnIdlePeer(){
+        HandoffState s=new HandoffState();s.source("buds",true,2);
+        var claim=s.beginClaim("buds");s.source("buds",false,0);
+        assertNull(s.finishClaim(claim,false));assertFalse(s.claiming(claim));assertFalse(s.remoteOwns("buds"));
+        assertNull(s.recoveryTicket("buds"));
+    }
+    @Test public void cancellingAnUnconfirmedInitialClaimCannotInventARemoteOwner(){
+        HandoffState s=new HandoffState();var claim=s.beginClaim("buds");
+        s.arm(claim);s.source("buds",false,0);
+        assertNull(s.finishClaim(claim,false));assertFalse(s.remoteOwns("buds"));
+    }
+    @Test public void pausingAfterLocalSelectionKeepsTheRouteEvenWhenPlaybackWasNotConfirmed(){
+        HandoffState s=new HandoffState();s.remote("buds");var claim=s.beginClaim("buds");
+        s.arm(claim);s.source("buds",true,0);s.source("buds",false,0);
+        assertNull(s.finishClaim(claim,false));assertFalse(s.remoteOwns("buds"));
+        assertNull(s.recoveryTicket("buds"));
+    }
+    @Test public void localAudioArrivingBeforeTheClaimWriteSupersedesThePreviousRemoteRoute(){
+        HandoffState s=new HandoffState();s.remote("buds");var claim=s.beginClaim("buds");
+        s.source("buds",true,2);s.source("buds",false,0);
+        assertNull(s.finishClaim(claim,false));assertFalse(s.remoteOwns("buds"));
+    }
+    @Test public void failedTakeoverBeforeLocalSelectionStillRestoresTheActualRemoteOwner(){
+        HandoffState s=new HandoffState();s.remote("buds");var claim=s.beginClaim("buds");
+        s.source("buds",true,0);s.arm(claim);
+        var remote=s.finishClaim(claim,false);
+        assertNotNull(remote);assertTrue(s.current(remote));assertTrue(s.remoteOwns("buds"));
+    }
+    @Test public void remoteAudioDiscoveredDuringPreparationIsRetainedIfTheClaimFails(){
+        HandoffState s=new HandoffState();var claim=s.beginClaim("buds");
+        assertNull(s.source("buds",false,2));assertTrue(s.claiming(claim));
+        var remote=s.finishClaim(claim,false);assertNotNull(remote);assertTrue(s.current(remote));
+    }
+    @Test public void replacementClaimsRetainTheOriginalRemoteOwnerUntilLocalSelection(){
+        HandoffState s=new HandoffState();s.remote("buds");var old=s.beginClaim("buds");var replacement=s.beginClaim("buds");
+        assertNull(s.finishClaim(old,false));assertTrue(s.claiming(replacement));
+        var remote=s.finishClaim(replacement,false);assertNotNull(remote);assertTrue(s.current(remote));
+    }
+    @Test public void aReplacementAfterLocalSelectionDoesNotRestoreTheOldRemoteOwner(){
+        HandoffState s=new HandoffState();s.remote("buds");var old=s.beginClaim("buds");
+        s.arm(old);s.source("buds",true,0);var replacement=s.beginClaim("buds");
+        assertNull(s.finishClaim(old,false));assertTrue(s.claiming(replacement));
+        assertNull(s.finishClaim(replacement,false));assertFalse(s.remoteOwns("buds"));
+    }
+    @Test public void disablingAfterLocalSelectionDoesNotRestoreTheOldRemoteOwner(){
+        HandoffState s=new HandoffState();s.remote("buds");var claim=s.beginClaim("buds");
+        s.arm(claim);s.source("buds",true,0);s.cancel("buds");
+        assertFalse(s.remoteOwns("buds"));assertFalse(s.claiming(claim));assertNull(s.finishClaim(claim,false));
+    }
+    @Test public void losingTheControlChannelDoesNotTurnALocalClaimIntoARemoteHandoff(){
+        HandoffState s=new HandoffState();s.source("buds",true,2);var claim=s.beginClaim("buds");
+        s.arm(claim);s.disconnected("buds");
+        assertFalse(s.claiming(claim));assertFalse(s.remoteOwns("buds"));assertNull(s.finishClaim(claim,false));
+    }
+    @Test public void explicitRemotePlaybackStillWinsAfterLocalSelectionAndPause(){
+        HandoffState s=new HandoffState();s.remote("buds");var claim=s.beginClaim("buds");
+        s.arm(claim);s.source("buds",true,0);s.source("buds",false,0);
+        var remote=s.source("buds",false,2);
+        assertNotNull(remote);assertTrue(s.current(remote));assertNull(s.finishClaim(claim,false));assertTrue(s.remoteOwns("buds"));
+    }
     @Test public void aDelayedRecoveryCannotReviveAfterALocalAndRemoteRoundTrip(){
         HandoffState s=new HandoffState();assertNull(s.recoveryTicket("buds"));
         s.remote("buds");var old=s.recoveryTicket("buds");assertTrue(s.current(old));

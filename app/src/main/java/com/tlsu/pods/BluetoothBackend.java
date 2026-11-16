@@ -99,7 +99,10 @@ final class BluetoothBackend extends Binder {
     }
     private final java.util.Set<String> automaticPending=ConcurrentHashMap.newKeySet();
     private void publishMediaState(){
-        BluetoothDevice d=lastDevice;if(d==null||!multiActive())return;
+        BluetoothDevice d=lastDevice;if(d!=null)publishMediaState(d);
+    }
+    private void publishMediaState(BluetoothDevice d){
+        if(!multiActive())return;
         routingWorker.execute(()->{
             try{
                 if(!multiActive()||handoff.claiming(d.getAddress()))return;
@@ -360,7 +363,9 @@ final class BluetoothBackend extends Binder {
             String self=localAddress();
             if(gameState(device).pending()){validated.add(expected);module.info("Passive AACP restore: foreground game loan retained");return;}
             if(handoff.remoteOwns(address)||sourceTypes.getOrDefault(address,0)!=0&&!self.equals(audioSources.get(address))){validated.add(expected);module.info("Passive AACP restore: remote route retained");return;}
-            if(peerTakingOver(address,self)){module.info("Deferred initial validation: peer is taking over");return;}
+            // Opening a control channel is not a playback intent. With another
+            // host present, keep its/current idle selection until a real request.
+            if(peers.getOrDefault(address,java.util.List.of()).stream().anyMatch(p->!p.equals(self))){validated.add(expected);module.info("Passive AACP restore: multi-device selection retained");return;}
             validated.add(expected);HandoffState.Ticket validation=handoff.beginClaim(address);validationClaims.put(address,validation);sendFrames(device,()->sessions.get(address)==expected&&multiActive()&&handoff.claiming(validation),()->handoff.arm(validation),Routing.ownership(true));requestState(device,500);
             module.info("Initial AACP validation claim sent");
             new Handler(Looper.getMainLooper()).postDelayed(()->routingWorker.execute(()->{
@@ -369,10 +374,12 @@ final class BluetoothBackend extends Binder {
                     validationClaims.remove(address,validation);
                     boolean localAudio=self.equals(audioSources.get(address))&&sourceTypes.getOrDefault(address,0)!=0;
                     module.info("Validation settled: localSource="+localAudio+" localPlayback="+MediaPlayback.playing(context)+" peerCount="+peers.getOrDefault(address,java.util.List.of()).size());
-                    if(!localAudio&&peers.getOrDefault(address,java.util.List.of()).stream().anyMatch(p->!p.equals(self))){
-                        sendFrames(device,()->sessions.get(address)==expected&&multiActive()&&handoff.claiming(validation),Routing.ownership(false));handoff.finishClaim(validation,false);module.info("Validation complete; idle ownership returned to peer");
-                        if(MediaPlayback.playing(context)&&autoMedia())playbackMonitor.recheckPlaying();
-                    }else handoff.finishClaim(validation,true);
+                    if(!localAudio&&sourceTypes.getOrDefault(address,0)!=0){
+                        yieldAudio(device,handoff.requestRemote(address),"音频来源已切换到另一台设备");
+                    }else{
+                        handoff.finishClaim(validation,true);
+                        module.info("Validation complete; current ownership retained while idle");
+                    }
                 }catch(Exception e){handoff.finishClaim(validation,false);routeFailure(device,e);}
             }),3000);
         }catch(Exception e){HandoffState.Ticket validation=validationClaims.remove(address);if(validation!=null)handoff.finishClaim(validation,false);routeFailure(device,e);}
@@ -1138,6 +1145,13 @@ final class BluetoothBackend extends Binder {
             if(error==null)error=new IOException("音频切换已取消");
             c.result.completeExceptionally(error);
             if(remote!=null&&pausedSessions.current(c.playbackSession))yieldAudio(c.device,remote,"切换未完成，音频已让回另一台设备",!c.routeOnly);
+            else if(sessions.get(address)==c.socket&&pausedSessions.current(c.playbackSession)&&!handoff.claiming(address)&&!handoff.remoteOwns(address)){
+                // Playback callbacks during a claim are suppressed. Publish the
+                // final paused state without releasing the retained local route.
+                mediaReported.remove(address);publishMediaState(c.device);
+                routingWorker.execute(()->restoreStem(c.device,c.socket));
+                module.info("Route ended without yielding; current device retained");
+            }
             module.info("Route transaction ended: generation="+c.ticket.generation()+" reason="+error.getMessage());
         }
     }

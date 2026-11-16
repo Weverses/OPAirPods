@@ -61,7 +61,6 @@ final class MediaStartMonitor {
             if(sessionsReady&&isPlaying(controller.getPlaybackState())){log.accept("Local media start: new playing session "+controller.getPackageName());sessionStarted(controller);changed.run();}
         }
     }
-    void recheckPlaying(){handler.post(()->{for(Watch watch:watches.values())if(isPlaying(watch.controller().getPlaybackState()))sessionStarted(watch.controller());});}
     private void sessionStarted(MediaController player){
         int uid=-1;try{uid=context.getPackageManager().getApplicationInfo(player.getPackageName(),0).uid;}catch(android.content.pm.PackageManager.NameNotFoundException ignored){}
         started.accept(new Start(player,uid,Set.of(),false));
