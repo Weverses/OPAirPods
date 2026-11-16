@@ -45,6 +45,8 @@ public final class ColorPodsModule extends XposedModule {
         if (!pkg.equals("com.android.bluetooth")) return;
 
         backend = new BluetoothBackend(this);
+        try { backend.headMotion.calls.install(loader); }
+        catch (Throwable e) { error("Head motion call adapter unavailable", e); }
         try {
             String library = getModuleApplicationInfo().nativeLibraryDir + "/libcolorpods.so";
             System.load(library);
@@ -74,7 +76,7 @@ public final class ColorPodsModule extends XposedModule {
 
         hookTarget(HostTargets.BT_STUB_ON_TRANSACT, loader, chain -> {
             int code = (int) chain.getArg(0) - BridgeClient.TRANSACTION_BASE;
-            if (code < BridgeClient.STATUS || code > BridgeClient.STEM_CONFIG)
+            if (code < BridgeClient.STATUS || code > BridgeClient.HEAD_MOTION)
                 return chain.proceed();
             Object receiver = chain.getThisObject();
             // The enhancer belongs to the OEM extension jar, which is added

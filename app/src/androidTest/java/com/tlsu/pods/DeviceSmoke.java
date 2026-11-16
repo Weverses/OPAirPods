@@ -8,13 +8,14 @@ import android.os.SystemClock;
 // Run while the device is awake; ColorOS may freeze background instrumentation.
 public final class DeviceSmoke extends Instrumentation {
     private boolean attOnly,doRouting,handoffTest,confirmationOnly,automatic,statusOnly;
-    private String probe,gameReturnSetting;
+    private String probe,gameReturnSetting,statusAddress;
     private int watch;
     private int expectedNoticeVersion;
     private final StringBuilder report=new StringBuilder();
     private boolean failed;
     private boolean gameRoute;
-    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);if(arguments!=null){statusOnly="true".equals(arguments.getString("statusOnly"));attOnly="true".equals(arguments.getString("attOnly"));doRouting="true".equals(arguments.getString("routing"));automatic="true".equals(arguments.getString("automatic"));probe=arguments.getString("probe");gameReturnSetting=arguments.getString("gameReturnSetting");handoffTest="true".equals(arguments.getString("handoff"));confirmationOnly="true".equals(arguments.getString("confirmation"));expectedNoticeVersion=Integer.parseInt(arguments.getString("noticeVersion","0"));watch=Integer.parseInt(arguments.getString("watch","0"));gameRoute="true".equals(arguments.getString("gameRoute"));}start();}
+    private boolean headMotionTest;
+    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);if(arguments!=null){statusAddress=arguments.getString("address");headMotionTest="true".equals(arguments.getString("headMotion"));statusOnly="true".equals(arguments.getString("statusOnly"));attOnly="true".equals(arguments.getString("attOnly"));doRouting="true".equals(arguments.getString("routing"));automatic="true".equals(arguments.getString("automatic"));probe=arguments.getString("probe");gameReturnSetting=arguments.getString("gameReturnSetting");handoffTest="true".equals(arguments.getString("handoff"));confirmationOnly="true".equals(arguments.getString("confirmation"));expectedNoticeVersion=Integer.parseInt(arguments.getString("noticeVersion","0"));watch=Integer.parseInt(arguments.getString("watch","0"));gameRoute="true".equals(arguments.getString("gameRoute"));}start();}
     private void emit(String value){report.append(value).append('\n');Bundle b=new Bundle();b.putString("stream",value+"\n");sendStatus(0,b);}
     @Override public void onStart(){
         try{
@@ -24,6 +25,7 @@ public final class DeviceSmoke extends Instrumentation {
                 Bundle base=bridge.request(BridgeClient.STATUS,diagnostic);
                 emit("PASS: Binder status response: manager="+base.getBoolean("manager")+" native="+base.getBoolean("native")+" noticeVersion="+base.getInt("handoffNoticeVersion")+" modeNoticeVersion="+base.getInt("listeningModeNoticeVersion"));
                 emit("Advanced controls backend: version="+base.getInt("advancedControlsVersion"));
+                emit("Head motion backend: version="+base.getInt("headMotionVersion"));
                 emit("Game return: version="+base.getInt("gameReturnVersion")+" enabled="+base.getBoolean("autoGameReturn")
                         +" foreground="+base.getBoolean("foregroundGame")+" players="+base.getInt("gamePlayers")
                         +" package="+base.getString("gamePackage","")+" detectionError="+base.getBoolean("gameDetectionError"));
@@ -37,15 +39,21 @@ public final class DeviceSmoke extends Instrumentation {
                 }
                 if(expectedNoticeVersion>0&&base.getInt("handoffNoticeVersion")!=expectedNoticeVersion)throw new AssertionError("Expected handoff notice backend version "+expectedNoticeVersion);
                 boolean ready=false;
-                for(var device:BluetoothAdapter.getDefaultAdapter().getBondedDevices()){
+                for(var device:statusAddress==null?BluetoothAdapter.getDefaultAdapter().getBondedDevices():java.util.List.of(BluetoothAdapter.getDefaultAdapter().getRemoteDevice(statusAddress))){
                     Bundle state=bridge.request(BridgeClient.STATUS,BridgeClient.forDevice(device.getAddress()));
                     Bundle values=state.getBundle("controls");
                     emit("Device status: controlReady="+state.getBoolean("controlReady")+" connected="+state.getBoolean("connected")
-                            +" acl="+Reflect.call(device,"isConnected",new Class[0])+" controls="+(values==null?0:values.size())
+                            +" acl="+(statusAddress==null?Reflect.call(device,"isConnected",new Class[0]):"not queried")+" controls="+(values==null?0:values.size())
                             +" listeningMode="+state.getInt("listeningMode")+" detail="+state.getString("channelDetail","none"));
                     emit("Game return candidate: pending="+state.getBoolean("gameReturnPending")+" returning="+state.getBoolean("gameReturning"));
                     emit("Advanced controls: EQ known="+state.getBoolean("eqKnown")+" stem active="+state.getBoolean("stemReady")
                             +" EQ confirmation="+state.getInt("eqConfirmation"));
+                    Bundle head=state.getBundle("headMotion");
+                    if(head!=null)emit("Head availability: available="+head.getBoolean("available")+" enabled="+head.getBoolean("enabled")
+                            +" active="+head.getBoolean("active")+" reason="+head.getString("message","")
+                            +" remoteOwner="+state.getBoolean("remoteAudioOwner")+" routePhase="+state.getInt("routePhase")
+                            +" localSource="+java.util.Objects.equals(state.getString("selfAddress"),state.getString("audioSource"))
+                            +" sourceType="+state.getInt("audioSourceType"));
                     ready|=state.getBoolean("controlReady");
                     if(state.getBoolean("controlReady"))emit("Ready device: "+device.getAddress());
                 }
@@ -54,15 +62,16 @@ public final class DeviceSmoke extends Instrumentation {
             }
             emit("Waiting for OEM AirPods channel and initial settings");
             while(address==null&&SystemClock.elapsedRealtime()<until){
-                for(var device:BluetoothAdapter.getDefaultAdapter().getBondedDevices())try{
+                for(var device:statusAddress==null?BluetoothAdapter.getDefaultAdapter().getBondedDevices():java.util.List.of(BluetoothAdapter.getDefaultAdapter().getRemoteDevice(statusAddress)))try{
                     Bundle s=bridge.request(BridgeClient.STATUS,BridgeClient.forDevice(device.getAddress()));Bundle c=s.getBundle("controls");
                     if(confirmationOnly&&s.getInt("controlConfirmationVersion")!=1)throw new AssertionError("New confirmation backend is not loaded");
                     boolean airpods=false;if(automatic&&device.getUuids()!=null)for(var uuid:device.getUuids())if(uuid.toString().equalsIgnoreCase("74ec2172-0bad-4d01-8f77-997b2be0722a"))airpods=true;
-                    if(airpods||s.getBoolean("controlReady")&&c!=null&&c.getByteArray("17")!=null){address=device.getAddress();status=s;break;}
+                    if(airpods||s.getBoolean("controlReady")&&(headMotionTest||c!=null&&c.getByteArray("17")!=null)){address=device.getAddress();status=s;break;}
                 }catch(Exception e){error=e.toString();}
                 if(address==null)SystemClock.sleep(250);
             }
             if(address==null)throw new AssertionError("No OEM channel: "+error);
+            if(headMotionTest){testHeadMotion(bridge,address,status);return;}
             long[] identity=status.getLongArray("nativeStatus");
             if(identity==null||identity[0]!=1||identity[1]!=1||identity[3]<1)throw new AssertionError("Apple identity not applied");
             emit("PASS: OEM Binder + native AACP channel + Apple SDP identity");
@@ -126,6 +135,46 @@ public final class DeviceSmoke extends Instrumentation {
             }
         }catch(Throwable e){failed=true;emit("FAIL: "+e);}
         finally{Bundle result=new Bundle();result.putString("stream",report.toString());finish(failed?Activity.RESULT_CANCELED:Activity.RESULT_OK,result);}
+    }
+    private void testHeadMotion(BridgeClient bridge,String address,Bundle baseline)throws Exception{
+        if(baseline.getInt("headMotionVersion")<1)throw new AssertionError("Head motion backend is not loaded");
+        Bundle head=baseline.getBundle("headMotion");
+        if(head==null||!head.getBoolean("available"))throw new AssertionError("Cannot sample: "+(head==null?"missing state":head.getString("message")));
+        String owner=java.util.UUID.randomUUID().toString();
+        Bundle start=BridgeClient.forDevice(address);start.putString("action","start");start.putString("owner",owner);
+        long samples=0;boolean stopped=false;
+        try{
+            bridge.request(BridgeClient.HEAD_MOTION,start);
+            long until=SystemClock.elapsedRealtime()+8000;
+            while(SystemClock.elapsedRealtime()<until){
+                Bundle request=BridgeClient.forDevice(address);request.putString("headMotionOwner",owner);
+                Bundle status=bridge.request(BridgeClient.STATUS,request);head=status.getBundle("headMotion");
+                if(head==null)throw new AssertionError("Missing motion state");
+                if(!head.getBoolean("testing")||!owner.equals(head.getString("owner")))throw new AssertionError("Wrong motion session");
+                samples=head.getLong("samples");
+                if(!head.getBoolean("active"))throw new AssertionError("Motion ended: "+head.getString("message"));
+                SystemClock.sleep(250);
+            }
+            if(samples<10)throw new AssertionError("Too few real motion samples: "+samples);
+            emit("PASS: received "+samples+" real motion samples in experience mode (no phone actions)");
+            // A stale page must not cancel the current page's subscription.
+            Bundle stale=new Bundle(start);stale.putString("action","stop");stale.putString("owner",java.util.UUID.randomUUID().toString());
+            Bundle retained=bridge.request(BridgeClient.HEAD_MOTION,stale).getBundle("headMotion");
+            if(retained==null||!retained.getBoolean("active"))throw new AssertionError("Stale owner stopped the current session");
+            emit("PASS: stale experience owner cannot stop current subscription");
+        }finally{
+            Bundle stop=new Bundle(start);stop.putString("action","stop");
+            Bundle after=bridge.request(BridgeClient.HEAD_MOTION,stop);head=after.getBundle("headMotion");
+            stopped=head!=null&&!head.getBoolean("active");
+            if(!stopped)throw new AssertionError("Experience subscription did not stop");
+            if(after.getInt("controlSessions")!=baseline.getInt("controlSessions")
+                    ||after.getInt("controlDrops")!=baseline.getInt("controlDrops"))throw new AssertionError("AACP connection changed during experience");
+            if(after.getInt("audioSourceType")!=0&&!java.util.Objects.equals(after.getString("selfAddress"),after.getString("audioSource")))
+                throw new AssertionError("Feedback left the local headset route");
+            if(head.getBoolean("enabled")!=baseline.getBundle("headMotion").getBoolean("enabled")
+                    ||head.getBoolean("reversed")!=baseline.getBundle("headMotion").getBoolean("reversed"))throw new AssertionError("Experience changed saved settings");
+            emit("PASS: stopped subscription; AACP session, local headset route and saved configuration retained");
+        }
     }
     private void testConfirmation(BridgeClient bridge,String address,Bundle status)throws Exception{
         // A same-value write exercises real delivery and confirmation without

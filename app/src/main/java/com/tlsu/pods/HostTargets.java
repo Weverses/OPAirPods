@@ -49,6 +49,10 @@ final class HostTargets {
     static final String BT_ADAPTER_SERVICE_CLASS = "bt.adapterService.class";
     static final String BT_ADAPTER_SERVICE_FIELD = "bt.adapterService.field";
     static final String APP_ATTACH = "framework.application.attach";
+    static final String BT_CALL_CREATE = "bt.call.onCreate";
+    static final String BT_CALL_DESTROY = "bt.call.onDestroy";
+    static final String BT_CALL_ADDED = "bt.call.onCallAdded";
+    static final String BT_CALL_REMOVED = "bt.call.onCallRemoved";
 
     static final String EXT_MANAGER_CLASS = "ext.manager.class";
     static final String EXT_MANAGER_PARSE = "ext.manager.parsePacket";
@@ -76,6 +80,7 @@ final class HostTargets {
     static final String UI_ACTIVITY_INIT_TOOLBAR = "ui.activity.initToolbar";
     static final String UI_ACTIVITY_BACK_PRESSED = "ui.activity.onBackPressed";
     static final String UI_ACTIVITY_RESUME = "ui.activity.onResume";
+    static final String UI_ACTIVITY_PAUSE = "ui.activity.onPause";
     static final String UI_ACTIVITY_BATTERY_UPDATE = "ui.activity.updateBatteryInfo";
     static final String UI_CASE_BATTERY_VISIBLE = "ui.battery.caseVisible";
     static final String UI_NOISE_SELECTION = "ui.noise.selection";
@@ -143,6 +148,11 @@ final class HostTargets {
         directClass(BT_ADAPTER_SERVICE_CLASS, DexKitHost.BLUETOOTH, ADAPTER_SERVICE);
         directField(BT_ADAPTER_SERVICE_FIELD, DexKitHost.BLUETOOTH, ADAPTER_SERVICE, "sAdapterService", ADAPTER_SERVICE);
         directMethod(APP_ATTACH, DexKitHost.BLUETOOTH, "android.app.Application", "attach", new String[]{"android.content.Context"}, "void", 0);
+        String inCall = "com.android.bluetooth.telephony.BluetoothInCallService";
+        directMethod(BT_CALL_CREATE, DexKitHost.BLUETOOTH, inCall, "onCreate", NONE, "void", 0);
+        directMethod(BT_CALL_DESTROY, DexKitHost.BLUETOOTH, inCall, "onDestroy", NONE, "void", 0);
+        directMethod(BT_CALL_ADDED, DexKitHost.BLUETOOTH, inCall, "onCallAdded", new String[]{"android.telecom.Call"}, "void", 0);
+        directMethod(BT_CALL_REMOVED, DexKitHost.BLUETOOTH, inCall, "onCallRemoved", new String[]{"android.telecom.Call"}, "void", 0);
 
         directClass(EXT_MANAGER_CLASS, DexKitHost.BLUETOOTH_EXT, MANAGER);
         directMethod(EXT_MANAGER_PARSE, DexKitHost.BLUETOOTH_EXT, MANAGER, "parseAirPodsPacket", new String[]{"[B", "int", "android.bluetooth.BluetoothDevice"}, "void", 0);
@@ -178,6 +188,7 @@ final class HostTargets {
         directMethod(UI_ACTIVITY_INIT_TOOLBAR, DexKitHost.MYDEVICES, ACTIVITY, "initToolbar", new String[]{"java.lang.String"}, "void", 0);
         directMethod(UI_ACTIVITY_BACK_PRESSED, DexKitHost.MYDEVICES, ACTIVITY, "onBackPressed", NONE, "void", 0);
         directMethod(UI_ACTIVITY_RESUME, DexKitHost.MYDEVICES, ACTIVITY, "onResume", NONE, "void", 0);
+        directMethod(UI_ACTIVITY_PAUSE, DexKitHost.MYDEVICES, ACTIVITY, "onPause", NONE, "void", 0);
         directMethod(UI_ACTIVITY_PREFERENCES_FRAGMENT, DexKitHost.MYDEVICES, ACTIVITY, "preferencesFragment", NONE, FRAGMENT, 0);
         directMethod(UI_FRAGMENT_FIND_PREFERENCE, DexKitHost.MYDEVICES, FRAGMENT, "findPreference", new String[]{"java.lang.CharSequence"}, null, 0);
         directMethod(UI_FRAGMENT_CREATE_PREFS, DexKitHost.MYDEVICES, FRAGMENT, "onCreatePreferences", new String[]{"android.os.Bundle", "java.lang.String"}, "void", 0);

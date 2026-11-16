@@ -19,6 +19,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 final class BluetoothBackend extends Binder {
     final CaseBattery caseBattery = new CaseBattery();
+    final HeadMotion headMotion;
+    private final Map<String,Boolean> headMotionWear = new ConcurrentHashMap<>();
     private final ColorPodsModule module;
     private volatile Context context;
     private volatile Object manager;
@@ -64,10 +66,34 @@ final class BluetoothBackend extends Binder {
     private volatile boolean gameWarning;
     private long sequence;
 
-    BluetoothBackend(ColorPodsModule module) { this.module = module; attachInterface(null, BridgeClient.DESCRIPTOR); }
+    BluetoothBackend(ColorPodsModule module) {
+        this.module = module; attachInterface(null, BridgeClient.DESCRIPTOR);
+        headMotion = new HeadMotion(module, new HeadMotion.Transport() {
+            public Iterable<String> addresses() { return java.util.List.copyOf(sessions.keySet()); }
+            public Object connection(String address) { return sessions.get(address); }
+            public String blocked(String address, Object connection) { return headMotionBlocked(address, connection); }
+            public void send(String address, Object connection, boolean start, boolean alternate) throws Exception {
+                sendFrames(device(address), () -> sessions.get(address) == connection
+                        && (!start || headMotionBlocked(address, connection) == null), HeadMotionCodec.tracking(start, alternate));
+            }
+        });
+    }
+    private String headMotionBlocked(String address, Object connection) {
+        if (connection == null || sessions.get(address) != connection
+                || !((BluetoothSocket) connection).isConnected()) return "请先连接耳机";
+        if (!Boolean.TRUE.equals(headMotionWear.get(address))) return "请佩戴耳机，等待佩戴状态更新";
+        if (remoteCall(device(address))) return "另一台设备正在通话，暂不启用头部操控";
+        if (handoff.claiming(address) || handoff.remoteOwns(address)) return "耳机正在其他设备使用，请先切回此手机";
+        if (sourceTypes.getOrDefault(address, 0) != 0) {
+            try { if (!localAddress().equals(audioSources.get(address))) return "耳机正在其他设备使用，请先切回此手机"; }
+            catch (IOException e) { return "尚未确认耳机音频来源"; }
+        }
+        return null;
+    }
     synchronized void attach(Context c) {
         if (context != null) return;
         context = c.getApplicationContext() == null ? c : c.getApplicationContext();
+        headMotion.attach(context);
         if (nativeLoaded) NativeBridge.setEnabled(context.getSharedPreferences("colorpods", 0).getBoolean("vendor", true));
         playbackMonitor=new MediaStartMonitor(context,module.getModuleApplicationInfo().uid,this::onLocalPlaybackStarted,this::publishMediaState,module::info);
     }
@@ -185,6 +211,11 @@ final class BluetoothBackend extends Binder {
         if(reader!=null&&sessions.get(device.getAddress())!=reader)return;
         if(!sessions.containsKey(device.getAddress()))try{sessionOpened(device,socket(device));}catch(Exception ignored){}
         BluetoothSocket packetSession=sessions.get(device.getAddress());
+        Boolean worn = HeadMotionCodec.worn(bytes, length);
+        if (worn != null) { headMotionWear.put(device.getAddress(), worn); headMotion.changed(); }
+        if (HeadMotionCodec.header(bytes, length, 0x17)) {
+            headMotion.packet(device.getAddress(), packetSession, bytes, length); return;
+        }
         if(bytes[4]==0x63){
             try{
                 CustomEq eq=CustomEq.parse(bytes,length);
@@ -444,6 +475,8 @@ final class BluetoothBackend extends Binder {
     }
     synchronized void disconnected(BluetoothDevice device) {
         if (device == null) return;
+        headMotionWear.remove(device.getAddress());
+        headMotion.disconnected(device.getAddress());
         caseBattery.disconnected(device.getAddress());
         pausedSessions.disconnected(device.getAddress());
         stemBindings.remove(device.getAddress());
@@ -715,6 +748,7 @@ final class BluetoothBackend extends Binder {
         result.putInt("controlConfirmationVersion",1);result.putInt("routingVersion",2);result.putInt("handoffNoticeVersion",2);result.putInt("gameReturnVersion",6);
         result.putInt("listeningModeNoticeVersion",1);
         result.putInt("advancedControlsVersion",2);
+        result.putInt("headMotionVersion",4);
         ListeningModeNotice modeNotice=address==null?null:modeNotices.get(address);
         result.putInt("listeningMode",modeNotice==null?0:modeNotice.mode());
         result.putBoolean("native", nativeLoaded);
@@ -747,6 +781,7 @@ final class BluetoothBackend extends Binder {
                 result.putInt("eqConfirmation",eqWrite==null?0:eqWrite.state(eqReport==null?null:eqReport.value,eqReport==null?0:eqReport.received,now));
             }
             result.putIntArray("stemActions",savedStem(address).values());
+            result.putBundle("headMotion",headMotion.status(address));
             StemBinding binding=stemBindings.get(address);result.putBoolean("stemReady",binding!=null&&binding.socket==sessions.get(address));
             result.putStringArray("peers", peers.getOrDefault(address, java.util.List.of()).toArray(new String[0]));
             result.putString("audioSource", audioSources.get(address));
@@ -782,7 +817,7 @@ final class BluetoothBackend extends Binder {
     }
     @Override protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) {
         if (code == INTERFACE_TRANSACTION) { reply.writeString(BridgeClient.DESCRIPTOR); return true; }
-        if (code < BridgeClient.STATUS || code > BridgeClient.MODE_NOTICE) return false;
+        if (code < BridgeClient.STATUS || code > BridgeClient.HEAD_MOTION) return false;
         data.enforceInterface(BridgeClient.DESCRIPTOR);
         Context c = context;
         if (c == null || !mayControl(c, Binder.getCallingUid())) throw new SecurityException("Untrusted Bluetooth bridge caller");
@@ -796,6 +831,7 @@ final class BluetoothBackend extends Binder {
             result = new Bundle();
             switch (code) {
                 case BridgeClient.STATUS -> {
+                    if (BluetoothAdapter.checkBluetoothAddress(address)) headMotion.heartbeat(address, request.getString("headMotionOwner", ""));
                     if(request.getBoolean("refreshControls"))sendFrames(device(address),Protocol.requestState());
                     result=status(address);if(request.getBoolean("audioState")&&BluetoothAdapter.checkBluetoothAddress(address))result.putBoolean("audioReady",AudioLinks.ready(c,device(address)));
                     if(request.getBoolean("gameState")){
@@ -877,6 +913,16 @@ final class BluetoothBackend extends Binder {
                         result.putLong("expiresAt",event.at()+HandoffNotice.MAX_AGE_MS);
                         result.putString("title",ListeningModeNotice.title(event.mode()));
                     }
+                }
+                case BridgeClient.HEAD_MOTION -> {
+                    device(address); // Validate the address before reading/saving device-specific state.
+                    String action=request.getString("action", "");
+                    switch(action) {
+                        case "configure" -> headMotion.configure(address, request.getString("field", ""), request.getBoolean("value"));
+                        case "start", "stop" -> headMotion.test(address, request.getString("owner"), action.equals("start"));
+                        default -> throw new IllegalArgumentException("未知头部操控操作");
+                    }
+                    result=status(address);
                 }
                 case BridgeClient.HANDOFF_NOTICE -> {
                     HandoffNotice state=handoffNotices.get(address);
