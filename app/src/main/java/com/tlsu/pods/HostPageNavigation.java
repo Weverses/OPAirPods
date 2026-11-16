@@ -48,6 +48,9 @@ final class HostPageNavigation {
         }
         return null;
     }
+    String visiblePage()throws ReflectiveOperationException{
+        Object page=top(manager());return page==null?null:pageKey(page);
+    }
     private int resource(String type,String name){
         int id=activity.getResources().getIdentifier(name,type,activity.getPackageName());
         if(id==0)throw new IllegalStateException("Missing host resource "+type+"/"+name);return id;
@@ -98,6 +101,7 @@ final class HostPageNavigation {
     }
     void viewCreated(Object page,View view)throws Exception{
         opening=false;prepare(page);
+        owner.headPageChanged();
         View home=activity.findViewById(resource("id","activity_standard_layout_main"));
         if(home!=null){if(homeAccessibility==null)homeAccessibility=home.getImportantForAccessibility();home.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);}
         view.setBackgroundResource(resource("drawable","coui_window_bg_with_card"));view.setClickable(true);
@@ -117,6 +121,7 @@ final class HostPageNavigation {
         view.requestApplyInsets();
     }
     void viewDestroyed()throws ReflectiveOperationException{
+        owner.headPageChanged();
         if(top(manager())!=null)return;
         View home=activity.findViewById(resource("id","activity_standard_layout_main"));
         if(home!=null&&homeAccessibility!=null){home.setImportantForAccessibility(homeAccessibility);homeAccessibility=null;}

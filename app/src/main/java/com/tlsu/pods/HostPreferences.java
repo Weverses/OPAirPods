@@ -38,6 +38,9 @@ final class HostPreferences {
     private Object eqToggle,eqReset;
     private CustomEq eqSelection;
     private StemConfig stemSelection;
+    private Object headToggle,headMapping,headStatus,headStart,headStop;
+    private String headOwner;
+    private boolean headForeground=true;
     private final Map<Integer,byte[]> sendingControls=new HashMap<>();
     private final Map<Object, Boolean> switchRows=new HashMap<>();
     private final Map<String,Object> attRows=new LinkedHashMap<>();
@@ -117,7 +120,7 @@ final class HostPreferences {
         pages.put(key,screen);pageTitles.put(key,title);pageEntries.put(key,entry);
         click(entry,()->navigation.open(key));return screen;
     }
-    boolean back(){return navigation.back();}
+    boolean back(){headPageLeaving();return navigation.back();}
     HostPageNavigation navigation(){return navigation;}
     Object pageScreen(String key){return pages.get(key);}
     String pageTitle(String key){return pageTitles.get(key);}
@@ -181,12 +184,30 @@ final class HostPreferences {
         for(int i=0;i<existing.length;i++){Object row=Reflect.call(fragment,"findPreference",new Class[]{CharSequence.class},existing[i]);if(row!=null)targetCall(row,HostTargets.UI_PREF_ORDER,orders[i]);}
         Object home=category(root,"cat_colorpods_home","耳机功能",0);
         Object listening=page(home,"listening","聆听体验","空间音频、降噪与通透、听力辅助");
-        Object controlsPage=page(home,"controls","耳机操控","佩戴检测、按压与长按、提示声音量");
+        Object controlsPage=page(home,"controls","耳机操控","佩戴检测、头部操控、按压与长按");
         Object routingPage=page(home,"routing","多设备连接","音频来源与设备切换");
         Object morePage=page(home,"more","更多设置","通话按键、优化充电与连接设置");
         Object sound=find("cat_airpods_sound_quality");move(sound,listening,0);
         Object settings=find("cat_airpods_settings");move(settings,controlsPage,0);
         if(settings!=null)targetCall(settings,HostTargets.UI_PREF_TITLE,"佩戴检测");
+        Object headEntry=category(controlsPage,"cat_colorpods_head_entry","头部操控",50);
+        Object headPage=page(headEntry,"head_motion","头部操控","点头接听、摇头拒接");
+        Object head=category(headPage,"cat_colorpods_head_motion","来电操控",0);
+        headToggle=add(head,"COUISwitchPreference","colorpods_head_enabled","头部操控");
+        summary(headToggle,"仅在来电响铃时识别头部动作");
+        featureChange(headToggle,v->changeHead("enabled",(Boolean)v));
+        headMapping=list(head,"colorpods_head_mapping","动作设置",new String[]{"点头接听，摇头拒接","摇头接听，点头拒接"},new String[]{"0","1"});
+        featureChange(headMapping,v->changeHead("reversed",v.toString().equals("1")));
+        Object headTestPage=page(head,"head_motion_test","试一试","识别点头和摇头，不执行通话操作");
+        Object headTest=category(headTestPage,"cat_colorpods_head_test","佩戴耳机，保持自然姿势",0);
+        headStatus=add(headTest,"COUIPreference","colorpods_head_status","准备体验");
+        targetCall(headStatus,PreferenceTargets.SELECTABLE,false);
+        summary(headStatus,"开始后连续点头或摇头；体验最长持续 30 秒");
+        Object headSoundHint=add(headTest,"COUIPreference","colorpods_head_sound_hint","声音反馈");
+        targetCall(headSoundHint,PreferenceTargets.SELECTABLE,false);
+        summary(headSoundHint,"轻响提示转动方向，清脆提示表示体验完成；体验使用媒体音量，来电使用通话音量，接听或拒接成功后再确认");
+        headStart=add(headTest,"COUIJumpPreference","colorpods_head_start","开始体验");click(headStart,this::startHeadTest);
+        headStop=add(headTest,"COUIJumpPreference","colorpods_head_stop","停止体验");click(headStop,this::stopHeadTest);
         Object effects=category(listening,"cat_colorpods_effects","音效",50);
         Object eqPage=page(effects,"equalizer","三段均衡器","低音、中音与高音");
         Object equalizer=category(eqPage,"cat_colorpods_eq","三段均衡器",0);
@@ -295,14 +316,23 @@ final class HostPreferences {
     }
     private Bundle request(){try{return BridgeClient.forDevice(address());}catch(Exception e){throw new IllegalStateException(e);}}
     void start(){active=true;main.removeCallbacksAndMessages(null);bindAdaptiveStrength();connection.start();refresh();}
-    void stop(){active=false;adaptiveStrength.detach();attGeneration++;attLoading=false;attWasReady=false;attValues.clear();connection.stop();main.removeCallbacksAndMessages(null);}
+    void stop(){stopHeadTest();active=false;adaptiveStrength.detach();attGeneration++;attLoading=false;attWasReady=false;attValues.clear();connection.stop();main.removeCallbacksAndMessages(null);}
     private void bindAdaptiveStrength(){try{adaptiveStrength.bind();}catch(Exception e){module.error("Adaptive strength binding failed",e);}}
     void listeningSelectorChanged(View selector){
         if(!alive())return;
         int id=activity.getResources().getIdentifier("ll_operation_noise","id",activity.getPackageName());
         if(activity.findViewById(id)==selector)bindAdaptiveStrength();
     }
-    void resume(){if(!active)start();main.post(this::connectionChanged);}
+    void resume(){headForeground=true;if(!active)start();main.post(this::connectionChanged);}
+    void pauseHeadMotion(){headForeground=false;stopHeadTest();}
+    void headPageLeaving(){stopHeadTest();}
+    void headPageChanged(){
+        main.post(()->{if(headOwner!=null&&!headTestVisible())stopHeadTest();});
+    }
+    private boolean headTestVisible(){
+        try{return headForeground&&"head_motion_test".equals(navigation.visiblePage());}
+        catch(Exception e){return false;}
+    }
     private void connectionChanged(){
         if(!alive())return;connection.reconcile();
         try{update();}catch(Exception e){module.error("COUI connection update failed",e);}
@@ -312,8 +342,10 @@ final class HostPreferences {
     private void onConfirmationDeadline(){if(!alive())return;try{update();}catch(Exception e){module.error("COUI confirmation timeout update failed",e);}}
     private void refresh(){
         if(!alive())return;connection.reconcile();if(busy){main.postDelayed(refreshTask,2000);return;}
-        Bundle b=request();IO.execute(()->{Bundle result=null;String error=null;try{result=bridge.request(BridgeClient.STATUS,b);}catch(Exception e){error=e.getMessage();}
-            Bundle r=result;String message=error;main.post(()->{if(!alive())return;if(r!=null){snapshot=r;connectionError=null;}else connectionError=message;try{update();}catch(Exception e){module.error("COUI update failed",e);}main.removeCallbacks(refreshTask);main.postDelayed(refreshTask,2500);});});
+        if(headOwner!=null&&!headTestVisible())stopHeadTest();
+        Bundle b=request();if(headOwner!=null)b.putString("headMotionOwner",headOwner);
+        IO.execute(()->{Bundle result=null;String error=null;try{result=bridge.request(BridgeClient.STATUS,b);}catch(Exception e){error=e.getMessage();}
+            Bundle r=result;String message=error;main.post(()->{if(!alive())return;if(r!=null){snapshot=r;connectionError=null;}else connectionError=message;try{update();}catch(Exception e){module.error("COUI update failed",e);}main.removeCallbacks(refreshTask);main.postDelayed(refreshTask,headOwner==null?2500:300);});});
     }
     private void update() throws Exception {
         bindAdaptiveStrength();
@@ -323,6 +355,7 @@ final class HostPreferences {
         enabled(vendorRow,identity!=null&&!busy);if(identity!=null)checked(vendorRow,identity[0]!=0);
         summary(vendorRow,"修改后需关闭再开启蓝牙");
         updateAudioSettings(ready);
+        updateHeadMotion(ready);
         Bundle c=snapshot.getBundle("controls");if(c==null)c=Bundle.EMPTY;
         Bundle pending=snapshot.getBundle("pendingControls");if(pending==null)pending=Bundle.EMPTY;
         Bundle updates=snapshot.getBundle("controlUpdates");if(updates==null)updates=Bundle.EMPTY;
@@ -434,6 +467,44 @@ final class HostPreferences {
         if(busy)return false;
         eqSelection=currentEq().patch(field,value);Bundle b=request();b.putString("field",field);b.putInt("value",value);
         operation(BridgeClient.EQ_PATCH,b,r->{snapshot=r;},()->eqSelection=null);return true;
+    }
+    private boolean changeHead(String field,boolean value){
+        if(busy)return false;
+        stopHeadTest();Bundle b=request();b.putString("action","configure");b.putString("field",field);b.putBoolean("value",value);
+        operation(BridgeClient.HEAD_MOTION,b,r->snapshot=r);return true;
+    }
+    private void startHeadTest(){
+        if(busy||headOwner!=null||!headTestVisible())return;
+        String owner=java.util.UUID.randomUUID().toString();headOwner=owner;
+        Bundle b=request();b.putString("action","start");b.putString("owner",owner);
+        operation(BridgeClient.HEAD_MOTION,b,r->{
+            snapshot=r;
+            if(owner.equals(headOwner)&&!headTestVisible())stopHeadTest();
+            main.removeCallbacks(refreshTask);main.post(refreshTask);
+        },()->main.post(()->{if(lastError!=null&&owner.equals(headOwner)){headOwner=null;main.post(refreshTask);}}));
+    }
+    private void stopHeadTest(){
+        String owner=headOwner;if(owner==null)return;headOwner=null;
+        Bundle b=request();b.putString("action","stop");b.putString("owner",owner);
+        IO.execute(()->{try{bridge.request(BridgeClient.HEAD_MOTION,b);}catch(Exception e){module.info("Head motion experience stop unavailable: "+e.getMessage());}});
+        if(alive()){main.removeCallbacks(refreshTask);main.post(refreshTask);}
+    }
+    private void updateHeadMotion(boolean ready)throws Exception{
+        boolean supported=snapshot.getInt("headMotionVersion")>=1;
+        Bundle head=snapshot.getBundle("headMotion");if(head==null)head=Bundle.EMPTY;
+        checked(headToggle,head.getBoolean("enabled"));enabled(headToggle,supported&&!busy);
+        summary(headToggle,head.getBoolean("callsAvailable")?"仅在来电响铃时识别头部动作":"当前系统通话适配尚未就绪，可使用试一试");
+        boolean reversed=head.getBoolean("reversed");call(headMapping,"setValue",String.class,reversed?"1":"0");
+        enabled(headMapping,supported&&!busy);summary(headMapping,reversed?"摇头接听，点头拒接":"点头接听，摇头拒接");
+        summary(pageEntries.get("head_motion"),head.getBoolean("enabled")?reversed?"已开启 · 摇头接听，点头拒接":"已开启 · 点头接听，摇头拒接":"未开启 · 点头或摇头处理来电");
+        boolean testing=head.getBoolean("active")&&head.getBoolean("testing")&&headOwner!=null&&headOwner.equals(head.getString("owner"));
+        if(headOwner!=null&&!head.getBoolean("active")&&headOwner.equals(head.getString("owner")))headOwner=null;
+        enabled(headStart,supported&&ready&&!busy&&headOwner==null&&head.getBoolean("available"));
+        enabled(headStop,headOwner!=null);
+        String text=!supported?"请更新模块并重启蓝牙后重试":head.getString("message","开始后连续点头或摇头；体验最长持续 30 秒");
+        targetCall(headStatus,HostTargets.UI_PREF_TITLE,testing?head.getInt("gesture")==1?"识别到点头":head.getInt("gesture")==2?"识别到摇头":"正在体验":"准备体验");
+        summary(headStatus,text);
+        summary(headStart,headOwner!=null&&!testing?"正在开始体验":testing?"体验中":"最长 30 秒，离开页面后自动停止");
     }
     private boolean changeStem(int side,int press,int action){
         if(busy)return false;

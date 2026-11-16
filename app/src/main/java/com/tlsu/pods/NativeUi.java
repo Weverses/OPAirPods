@@ -65,6 +65,14 @@ final class NativeUi {
             if (p != null) p.resume();
             return result;
         });
+        hook(module, loader, HostTargets.UI_ACTIVITY_PAUSE, chain -> {
+            // onPause may be inherited from Activity; the hook then observes
+            // other activities in this process as well.
+            if(!activityName.equals(chain.getThisObject().getClass().getName()))return chain.proceed();
+            Object home=preferencesFragment(chain.getThisObject());
+            HostPreferences p=CONTROLLERS.get(home);if(p!=null)p.pauseHeadMotion();
+            return chain.proceed();
+        });
         hook(module, loader, HostTargets.UI_SUBPAGE_CREATE_PREFS, chain -> {
             Object result = chain.proceed();
             HostPreferences p = pageOwner(chain.getThisObject());
