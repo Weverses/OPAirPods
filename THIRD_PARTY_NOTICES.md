@@ -12,6 +12,10 @@ AACP control commands, Classic ATT handle/layout information, and TiPi/Smart Rou
 
 The hardware three-band EQ format and stem event/configuration values also follow `data/CustomEq.kt`, `data/StemAction.kt`, `AACPManager.kt`, and `AirPodsViewModel.kt` at the same reference revision. Native COUI adapters, session guards, and assistant targeting are implemented in this module.
 
+Head motion tracking start/stop frames, the known raw motion sample offsets, and the initial amplitude/extrema approach reference `AACPManager.kt`, `utils/HeadOrientation.kt`, `utils/GestureDetector.kt`, and `AirPodsService.kt` at that revision. The validated variable-length sensor envelope parser, bounded timestamp-based detector, subscription lifecycle, native call adapter, and COUI pages are implemented in this module. Raw motion values are not represented as calibrated angles.
+
+The raw movement direction polarity also follows the `utils/GestureFeedback.kt` convention at that revision. The synthesized feedback PCM, bounded output routing, and observed call outcome confirmation are implemented in this module; no upstream audio assets are included.
+
 The integration uses independent API102 adapters and the host's original UI/runtime. It does not redistribute the proprietary host APKs.
 
 ## XZ Embedded

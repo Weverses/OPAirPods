@@ -20,6 +20,7 @@ local.properties
 /docs/upstream-pr-analysis.md
 /docs/adaptive-strength.md
 /docs/case-battery.md
+/docs/head-motion.md
 
 # macOS metadata
 .DS_Store
