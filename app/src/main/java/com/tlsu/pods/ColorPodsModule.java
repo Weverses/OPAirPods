@@ -35,6 +35,8 @@ public final class ColorPodsModule extends XposedModule {
 
         if (pkg.equals("com.heytap.mydevices")) {
             DexKitHost.init(this, DexKitHost.MYDEVICES, loader, sourceDir);
+            try { SpatialModePage.install(this,loader); }
+            catch (Throwable e) { error("Spatial mode page unavailable",e); }
             try { NativeUi.install(this, loader); }
             catch (Throwable e) { error("MyDevices UI adapter unavailable", e); }
             try { CaseBatteryHooks.installUi(this, loader); }
@@ -76,7 +78,7 @@ public final class ColorPodsModule extends XposedModule {
 
         hookTarget(HostTargets.BT_STUB_ON_TRANSACT, loader, chain -> {
             int code = (int) chain.getArg(0) - BridgeClient.TRANSACTION_BASE;
-            if (code < BridgeClient.STATUS || code > BridgeClient.HEAD_MOTION)
+            if (code < BridgeClient.STATUS || code > BridgeClient.SPATIAL)
                 return chain.proceed();
             Object receiver = chain.getThisObject();
             // The enhancer belongs to the OEM extension jar, which is added

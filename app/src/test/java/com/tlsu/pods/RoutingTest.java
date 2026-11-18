@@ -17,6 +17,24 @@ public class RoutingTest {
         var peers=java.util.List.of(new Routing.Peer("phone",2,1),new Routing.Peer("mac",2,1));
         assertNull(Routing.target("self",null,null,peers));
     }
+    @Test public void resumingAfterPauseKeepsTheSelectedAndroidRoute(){
+        var peers=java.util.List.of(new Routing.Peer("self",2,6),new Routing.Peer("mac",2,1));
+        assertEquals("self",Routing.selectedHost(peers));
+        assertFalse(Routing.needsReclaim("self","00:00:00:00:00:00",0,false,peers));
+        assertTrue(Routing.needsReclaim("self","mac",2,false,peers));
+        assertTrue(Routing.needsReclaim("self",null,0,true,peers));
+    }
+    @Test public void anInactivePeerCannotTriggerReclaimWhenTheSourceGoesIdle(){
+        var peers=java.util.List.of(new Routing.Peer("self",2,4),new Routing.Peer("mac",0,3));
+        assertNull(Routing.selectedHost(peers));
+        assertFalse(Routing.needsReclaim("self",null,0,false,peers));
+    }
+    @Test public void resumingCanReclaimFromASelectedRemoteHostEvenWhenItIsIdle(){
+        var peers=java.util.List.of(new Routing.Peer("self",2,5),new Routing.Peer("mac",2,3));
+        assertEquals("mac",Routing.selectedHost(peers));
+        assertTrue(Routing.needsReclaim("self",null,0,false,peers));
+        assertFalse(Routing.needsReclaim("self","self",2,true,peers));
+    }
     @Test public void anIdleRouteDoesNotEraseAnExplicitCallReport(){
         var call=new Routing.Message("peer","Mac",false,false,false,true,501);
         var transition=new Routing.Message("peer","Mac",false,false,false,true,100);

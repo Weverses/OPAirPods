@@ -5,45 +5,62 @@ package com.tlsu.pods;
 /** AACP sensor reports have a protobuf envelope with variable-length counters.
  * Sensor offsets are relative to the binary report, never to the whole packet. */
 final class HeadMotionCodec {
+    static final int REPORT_INTERVAL_US = 40_000;
     private HeadMotionCodec() {}
     record Sample(int horizontal, int vertical, long at) {}
 
     static byte[] tracking(boolean start, boolean alternate) {
+        int intervalUs = start ? REPORT_INTERVAL_US : 0;
         String hex = alternate
-                ? start ? "040004001700000010000f000873420b081010021a0501409c0000"
+                ? start ? "040004001700000010000f000873420b081010021a050100000000"
                         : "040004001700000010000f000875420b081010021a050100000000"
-                : start ? "04000400170000001000100008a102420b080e10021a0501409c0000"
+                : start ? "04000400170000001000100008a102420b080e10021a050100000000"
                         : "040004001700000010001100087e1002420b084e10021a050100000000";
         byte[] result = new byte[hex.length() / 2];
         for (int i = 0; i < result.length; i++) result[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+        // RTBuddy service setting: 0x01 followed by a little-endian interval in microseconds.
+        for (int i = 0; i < 4; i++) result[result.length - 4 + i] = (byte) (intervalUs >>> (8 * i));
         return result;
     }
 
     static Sample sample(byte[] data, int length, long at) {
+        // Ringing-call gestures retain their validated report variants.
+        int payload = payloadOffset(data, length, false);
+        if (payload < 0 || data[payload+10] != 0) return null;
+        int horizontal = signed16(data, payload+28), vertical = signed16(data, payload+30);
+        if (Math.abs(horizontal) > 6000 || Math.abs(vertical) > 6000) return null;
+        return new Sample(horizontal, vertical, at);
+    }
+
+    static int payloadOffset(byte[] data, int length) {
+        return payloadOffset(data, length, true);
+    }
+
+    private static int payloadOffset(byte[] data, int length, boolean acceptSpatialVariant) {
         if (!header(data, length, 0x17) || length < 70
                 || data[6] != 0 || data[7] != 0 || data[8] != 0x10 || data[9] != 0
-                || unsigned16(data, 10) != length - 12) return null;
+                || unsigned16(data, 10) != length - 12) return -1;
         Envelope envelope = envelope(data, 12, length, 2);
-        if (envelope == null || envelope.type != 3) return null;
+        if (envelope == null) return -1;
+        // During playback the same earbuds used type 1 with field 7, then field 3
+        // after a device handoff. Validate the sensor record independently of the outer type.
+        if (envelope.type != 3 && !(acceptSpatialVariant && envelope.type == 1)) return -1;
         int payload;
         if (envelope.report >= 0) {
             if (envelope.nested >= 0 || envelope.reportLength != 60
-                    || data[envelope.report] != 0x10 || data[envelope.report+1] != 0) return null;
+                    || data[envelope.report] != 0x10 || data[envelope.report+1] != 0) return -1;
             payload = envelope.report + 2;
         } else {
-            if (envelope.nested < 0) return null;
+            if (envelope.nested < 0) return -1;
             Envelope sensor = envelope(data, envelope.nested, envelope.nested + envelope.nestedLength, 1);
             if (sensor == null || sensor.type != 16 || sensor.report < 0
-                    || sensor.reportLength != 58 || sensor.nested >= 0) return null;
+                    || sensor.reportLength != 58 || sensor.nested >= 0) return -1;
             payload = sensor.report;
         }
         // Captured firmware reports either a 60-byte typed record in field 3,
         // or sensor type 16 + its 58-byte payload inside field 7. The payload
         // and axes are identical; envelope counters must never become motion.
-        if (data[payload] != 1 || data[payload+9] != 3 || data[payload+10] != 0) return null;
-        int horizontal = signed16(data, payload+28), vertical = signed16(data, payload+30);
-        if (Math.abs(horizontal) > 6000 || Math.abs(vertical) > 6000) return null;
-        return new Sample(horizontal, vertical, at);
+        return data[payload] == 1 && data[payload+9] == 3 ? payload : -1;
     }
 
     private record Envelope(int type, int report, int reportLength, int nested, int nestedLength) {}
@@ -107,7 +124,7 @@ final class HeadMotionCodec {
         return first == 0 || second == 0;
     }
 
-    private static int signed16(byte[] data, int offset) {
+    static int signed16(byte[] data, int offset) {
         return (short) ((data[offset] & 255) | ((data[offset + 1] & 255) << 8));
     }
 }

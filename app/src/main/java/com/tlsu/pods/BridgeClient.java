@@ -9,7 +9,7 @@ import android.os.Parcel;
 final class BridgeClient {
     static final String DESCRIPTOR = "com.tlsu.pods.BluetoothBridge.v1";
     static final int TRANSACTION_BASE = 0x00c01000;
-    static final int STATUS = 1, VENDOR = 2, CONTROL = 3, ATT_READ = 4, ATT_PATCH = 5, ROUTE = 6, MULTIPOINT = 7, HANDOFF_NOTICE=8, MODE_NOTICE=9, EQ_PATCH=10, STEM_CONFIG=11, HEAD_MOTION=12;
+    static final int STATUS = 1, VENDOR = 2, CONTROL = 3, ATT_READ = 4, ATT_PATCH = 5, ROUTE = 6, MULTIPOINT = 7, HANDOFF_NOTICE=8, MODE_NOTICE=9, EQ_PATCH=10, STEM_CONFIG=11, HEAD_MOTION=12, SPATIAL=13;
     private final Context context;
     BridgeClient(Context context) { this.context = context; }
     Bundle request(int operation, Bundle request) throws Exception {

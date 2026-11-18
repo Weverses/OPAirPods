@@ -15,11 +15,30 @@ public final class DeviceSmoke extends Instrumentation {
     private boolean failed;
     private boolean gameRoute;
     private boolean headMotionTest;
-    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);if(arguments!=null){statusAddress=arguments.getString("address");headMotionTest="true".equals(arguments.getString("headMotion"));statusOnly="true".equals(arguments.getString("statusOnly"));attOnly="true".equals(arguments.getString("attOnly"));doRouting="true".equals(arguments.getString("routing"));automatic="true".equals(arguments.getString("automatic"));probe=arguments.getString("probe");gameReturnSetting=arguments.getString("gameReturnSetting");handoffTest="true".equals(arguments.getString("handoff"));confirmationOnly="true".equals(arguments.getString("confirmation"));expectedNoticeVersion=Integer.parseInt(arguments.getString("noticeVersion","0"));watch=Integer.parseInt(arguments.getString("watch","0"));gameRoute="true".equals(arguments.getString("gameRoute"));}start();}
+    private boolean spatialStatus;
+    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);spatialStatus=arguments!=null && "true".equals(arguments.getString("spatialStatus"));if(arguments!=null){statusAddress=arguments.getString("address");headMotionTest="true".equals(arguments.getString("headMotion"));statusOnly="true".equals(arguments.getString("statusOnly"));attOnly="true".equals(arguments.getString("attOnly"));doRouting="true".equals(arguments.getString("routing"));automatic="true".equals(arguments.getString("automatic"));probe=arguments.getString("probe");gameReturnSetting=arguments.getString("gameReturnSetting");handoffTest="true".equals(arguments.getString("handoff"));confirmationOnly="true".equals(arguments.getString("confirmation"));expectedNoticeVersion=Integer.parseInt(arguments.getString("noticeVersion","0"));watch=Integer.parseInt(arguments.getString("watch","0"));gameRoute="true".equals(arguments.getString("gameRoute"));}start();}
     private void emit(String value){report.append(value).append('\n');Bundle b=new Bundle();b.putString("stream",value+"\n");sendStatus(0,b);}
     @Override public void onStart(){
         try{
             BridgeClient bridge=new BridgeClient(getTargetContext());String address=null;Bundle status=null;String error="";long until=SystemClock.elapsedRealtime()+30_000;
+            if(spatialStatus){
+                Bundle request=BridgeClient.forDevice(statusAddress);request.putString("action","status");
+                Bundle state=bridge.request(BridgeClient.SPATIAL,request);
+                emit("spatial version="+state.getInt("version")+" mode="+state.getInt("mode")
+                        +" sending="+state.getBoolean("sending")+" reports="+state.getLong("reports")
+                        +" yaw="+state.getInt("yaw")+" resets="+state.getInt("resets")+" detail="+state.getString("detail",""));
+                if (state.containsKey("callbacks"))
+                    emit("input callbacks="+state.getLong("callbacks")+" unbound="+state.getLong("unbound")
+                            +" payloads="+state.getLong("payloads")+" poses="+state.getLong("poses")
+                            +" lastFlags="+state.getInt("flags")+" lastLength="+state.getInt("length")
+                            +" starts="+state.getInt("starts")+" alternate="+state.getBoolean("alternate")
+                            +" halControl="+state.getInt("control")
+                            +" requestedIntervalUs="+state.getInt("requestedIntervalUs")
+                            +" sampleIntervalUs="+state.getLong("sampleIntervalUs")
+                            +" bridgeUs="+state.getLong("bridgeUs"));
+                if(state.getInt("version")!=1)throw new AssertionError("Spatial backend unavailable");
+                return;
+            }
             if(statusOnly){
                 Bundle diagnostic=new Bundle();diagnostic.putBoolean("gameState",true);
                 Bundle base=bridge.request(BridgeClient.STATUS,diagnostic);

@@ -51,12 +51,28 @@ final class Routing {
     static byte[] reverse(String target){return frame(target,dict("audioRoutingSetOwnershipToFalse",true,"audioRoutingShowReverseUI",true,"reason","ReverseBannerTapped"));}
     static byte[] ownership(boolean own){return new byte[]{4,0,4,0,9,0,6,(byte)(own?1:0),0,0,0};}
     record Peer(String address,int role,int state){boolean takingOver(){return state>=0x10&&(state&2)==0&&state!=0x15;}}
+    static String selectedHost(List<Peer> records) {
+        String owner = null;
+        for (Peer peer : records) {
+            if (peer.role() == 0 || (peer.state() & 2) == 0) continue;
+            if (owner != null) return null;
+            owner = peer.address();
+        }
+        return owner;
+    }
+    static boolean needsReclaim(String self, String source, int type, boolean remoteOwns, List<Peer> records) {
+        if (type != 0 && source != null) return !self.equals(source);
+        if (remoteOwns) return true;
+        // A pause clears the streaming source while the TiPi owner can stay selected.
+        if (self.equals(selectedHost(records))) return false;
+        return records.stream().anyMatch(peer -> peer.role() != 0 && !self.equals(peer.address()));
+    }
     static String target(String self,String requested,String source,List<Peer> records){
         var active=records.stream().filter(p->!p.address().equals(self)&&p.role()!=0).collect(java.util.stream.Collectors.toList());
         if(requested!=null){if(active.stream().noneMatch(p->p.address().equals(requested)))throw new IllegalArgumentException("所选设备已断开");return requested;}
         if(source!=null&&active.stream().anyMatch(p->p.address().equals(source)))return source;
-        var owners=active.stream().filter(p->(p.state()&2)!=0).collect(java.util.stream.Collectors.toList());
-        if(owners.size()==1)return owners.get(0).address();
+        String owner=selectedHost(active);
+        if(owner!=null)return owner;
         return active.size()==1?active.get(0).address():null;
     }
     static List<Peer> peerRecords(byte[] data,int n){

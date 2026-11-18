@@ -44,8 +44,11 @@ final class StemConfig {
         }
     }
     byte[] packet(){return new byte[]{4,0,4,0,9,0,0x39,(byte)mask(),0,0,0};}
+    static boolean isPressPacket(byte[] data, int length) {
+        return length == 8 && Routing.header(data, length) && data[4] == 0x19;
+    }
     static Press parse(byte[] data,int length){
-        if(data==null||length!=8||length>data.length||!Routing.header(data,length)||data[4]!=0x19||data[5]!=0)
+        if(!isPressPacket(data,length))
             throw new IllegalArgumentException("未知的耳柄事件");
         return new Press(data[7]&255,(data[6]&255)-5);
     }

@@ -20,6 +20,8 @@ import java.util.concurrent.ConcurrentHashMap;
 final class BluetoothBackend extends Binder {
     final CaseBattery caseBattery = new CaseBattery();
     final HeadMotion headMotion;
+    private final HeadMotionStream motionStream;
+    private final SpatialAudioController spatial;
     private final Map<String,Boolean> headMotionWear = new ConcurrentHashMap<>();
     private final ColorPodsModule module;
     private volatile Context context;
@@ -68,15 +70,20 @@ final class BluetoothBackend extends Binder {
 
     BluetoothBackend(ColorPodsModule module) {
         this.module = module; attachInterface(null, BridgeClient.DESCRIPTOR);
-        headMotion = new HeadMotion(module, new HeadMotion.Transport() {
+        motionStream = new HeadMotionStream((address,connection,start,alternate) ->
+                sendFrames(device(address), () -> sessions.get(address) == connection
+                        && (!start || headMotionBlocked(address, connection) == null),
+                        HeadMotionCodec.tracking(start, alternate)));
+        HeadMotion.Transport transport = new HeadMotion.Transport() {
             public Iterable<String> addresses() { return java.util.List.copyOf(sessions.keySet()); }
             public Object connection(String address) { return sessions.get(address); }
             public String blocked(String address, Object connection) { return headMotionBlocked(address, connection); }
             public void send(String address, Object connection, boolean start, boolean alternate) throws Exception {
-                sendFrames(device(address), () -> sessions.get(address) == connection
-                        && (!start || headMotionBlocked(address, connection) == null), HeadMotionCodec.tracking(start, alternate));
+                motionStream.change(HeadMotionStream.Consumer.GESTURE, address, connection, start, alternate);
             }
-        });
+        };
+        headMotion = new HeadMotion(module,transport);
+        spatial = new SpatialAudioController(module,transport,motionStream,headMotion.calls::busy,()->nativeLoaded);
     }
     private String headMotionBlocked(String address, Object connection) {
         if (connection == null || sessions.get(address) != connection
@@ -94,11 +101,14 @@ final class BluetoothBackend extends Binder {
         if (context != null) return;
         context = c.getApplicationContext() == null ? c : c.getApplicationContext();
         headMotion.attach(context);
+        try { spatial.attach(context); }
+        catch (RuntimeException | LinkageError e) { module.error("Spatial audio monitor unavailable", e); }
         if (nativeLoaded) NativeBridge.setEnabled(context.getSharedPreferences("colorpods", 0).getBoolean("vendor", true));
         playbackMonitor=new MediaStartMonitor(context,module.getModuleApplicationInfo().uid,this::onLocalPlaybackStarted,this::publishMediaState,module::info);
     }
     private final java.util.Set<String> automaticPending=ConcurrentHashMap.newKeySet();
     private void publishMediaState(){
+        spatial.changed();
         BluetoothDevice d=lastDevice;if(d!=null)publishMediaState(d);
     }
     private void publishMediaState(BluetoothDevice d){
@@ -163,11 +173,14 @@ final class BluetoothBackend extends Binder {
         return peerReports.getOrDefault(address,Map.of()).values().stream().anyMatch(Routing.Message::call);
     }
     private boolean needsReclaim(BluetoothDevice d){
-        if(handoff.claiming(d.getAddress())){HandoffState.Ticket validation=validationClaims.get(d.getAddress());return validation!=null&&handoff.claiming(validation);}
+        String address=d.getAddress();
+        if(handoff.claiming(address)){HandoffState.Ticket validation=validationClaims.get(address);return validation!=null&&handoff.claiming(validation);}
         try{
             socket(d);String self=localAddress();
-            if(self.equals(audioSources.get(d.getAddress()))&&sourceTypes.getOrDefault(d.getAddress(),0)==2)return false;
-            return handoff.remoteOwns(d.getAddress())||peers.getOrDefault(d.getAddress(),java.util.List.of()).stream().anyMatch(peer->!peer.equals(self));
+            synchronized(controlsLock){
+                return Routing.needsReclaim(self,audioSources.get(address),sourceTypes.getOrDefault(address,0),
+                        handoff.remoteOwns(address),peerRecords.getOrDefault(address,java.util.List.of()));
+            }
         }catch(Exception e){return true;}
     }
     private void onLocalPlaybackStarted(MediaStartMonitor.Start start){
@@ -215,8 +228,12 @@ final class BluetoothBackend extends Binder {
         if(!sessions.containsKey(device.getAddress()))try{sessionOpened(device,socket(device));}catch(Exception ignored){}
         BluetoothSocket packetSession=sessions.get(device.getAddress());
         Boolean worn = HeadMotionCodec.worn(bytes, length);
-        if (worn != null) { headMotionWear.put(device.getAddress(), worn); headMotion.changed(); }
+        if (worn != null) {
+            Boolean old=headMotionWear.put(device.getAddress(), worn); headMotion.changed();
+            if (!worn.equals(old)) spatial.changed();
+        }
         if (HeadMotionCodec.header(bytes, length, 0x17)) {
+            spatial.packet(device.getAddress(),reader,bytes,length,SystemClock.elapsedRealtimeNanos());
             headMotion.packet(device.getAddress(), packetSession, bytes, length); return;
         }
         if(bytes[4]==0x63){
@@ -236,6 +253,7 @@ final class BluetoothBackend extends Binder {
         if (bytes[4] == 0x0e && length >= 13) {
             synchronized(controlsLock){String source=Routing.mac(bytes,6,true);String previous=audioSources.put(device.getAddress(),source);Integer type=sourceTypes.put(device.getAddress(),bytes[12]&255);sourceSequences.put(device.getAddress(),++sequence);
                 if(!source.equals(previous)||!java.util.Objects.equals(type,bytes[12]&255))try{module.info("Audio source: local="+localAddress().equals(source)+" type="+(bytes[12]&255));}catch(IOException ignored){}}
+            spatial.changed();
             routingWorker.execute(()->{
                 if(packetSession==null||sessions.get(device.getAddress())!=packetSession)return;
                 if(stemRouteLocal(device))restoreStem(device,packetSession);
@@ -313,9 +331,8 @@ final class BluetoothBackend extends Binder {
     private void observeHandoffOwner(BluetoothDevice device,java.util.List<Routing.Peer> records){
         if(!multiActive()||handoff.claiming(device.getAddress()))return;
         try{
-            var owners=records.stream().filter(p->p.role()!=0&&(p.state()&2)!=0).collect(java.util.stream.Collectors.toList());
             queueHandoffNotice(device,handoffNotices.computeIfAbsent(device.getAddress(),k->new HandoffNotice())
-                    .observeOwner(localAddress(),owners.size()==1?owners.get(0).address():null,SystemClock.elapsedRealtime()));
+                    .observeOwner(localAddress(),Routing.selectedHost(records),SystemClock.elapsedRealtime()));
         }catch(IOException ignored){}
     }
     private void queueHandoffNotice(BluetoothDevice device,HandoffNotice.Event event){
@@ -350,6 +367,7 @@ final class BluetoothBackend extends Binder {
     synchronized void sessionOpened(BluetoothDevice device,BluetoothSocket socket){
         BluetoothSocket previous=sessions.get(device.getAddress());if(previous==socket)return;
         if(previous!=null)disconnected(device);sessions.put(device.getAddress(),socket);lastDevice=device;openedAt.put(device.getAddress(),SystemClock.elapsedRealtime());sessionCounts.merge(device.getAddress(),1,Integer::sum);module.info("OEM AACP session opened");
+        spatial.changed();
         Claim pending=claims.get(device.getAddress());if(pending!=null&&handoff.preparing(pending.ticket))pending.socket=socket;
         requestState(device,1000);
         new Handler(Looper.getMainLooper()).postDelayed(()->routingWorker.execute(()->restoreStem(device,socket)),1500);
@@ -386,6 +404,7 @@ final class BluetoothBackend extends Binder {
     }
     synchronized void sessionClosed(BluetoothDevice device,BluetoothSocket socket){
         if(!sessions.remove(device.getAddress(),socket))return;validated.remove(socket);
+        routingWorker.execute(()->motionStream.forget(device.getAddress(),socket));
         sessionDrops.merge(device.getAddress(),1,Integer::sum);
         module.info("OEM AACP reader ended; clearing stale device state");disconnected(device);recoverControl(device);
     }
@@ -492,6 +511,8 @@ final class BluetoothBackend extends Binder {
             retain=game.target().sameApp(currentForeground())&&Boolean.TRUE.equals(Reflect.call(device,"isConnected",new Class[0]));
         }catch(Exception ignored){}
         BluetoothSocket ended=sessions.remove(device.getAddress());if(ended!=null){validated.remove(ended);sessionDrops.merge(device.getAddress(),1,Integer::sum);}handoff.disconnected(device.getAddress());
+        if(ended!=null)routingWorker.execute(()->motionStream.forget(device.getAddress(),ended));
+        spatial.changed();
         synchronized(controlsLock){states.remove(device.getAddress());controlWrites.remove(device.getAddress());controlRefreshes.remove(device.getAddress());eqReports.remove(device.getAddress());eqWrites.remove(device.getAddress());}
         requested.remove(device.getAddress());
         validationClaims.remove(device.getAddress());peerReports.remove(device.getAddress());mediaReported.remove(device.getAddress());openedAt.remove(device.getAddress());peers.remove(device.getAddress());peerRecords.remove(device.getAddress());sourceSequences.remove(device.getAddress()); audioSources.remove(device.getAddress());
@@ -633,7 +654,7 @@ final class BluetoothBackend extends Binder {
         catch(IOException ignored){return false;}
     }
     boolean stemPacket(byte[] bytes,int length,BluetoothDevice device,BluetoothSocket reader){
-        if(device==null)return false;
+        if(device==null||!StemConfig.isPressPacket(bytes,length))return false;
         try{
             StemConfig.Press press=StemConfig.parse(bytes,length);StemBinding binding=stemBindings.get(device.getAddress());
             if(binding==null||reader!=null&&binding.socket!=reader||!stemActive(device,binding)||!binding.dispatch.handles(press))return false;
@@ -793,6 +814,7 @@ final class BluetoothBackend extends Binder {
             result.putStringArray("peers", peers.getOrDefault(address, java.util.List.of()).toArray(new String[0]));
             result.putString("audioSource", audioSources.get(address));
             result.putInt("audioSourceType",sourceTypes.getOrDefault(address,0));
+            result.putString("selectedAudioHost",Routing.selectedHost(peerRecords.getOrDefault(address,java.util.List.of())));
             Bundle types=new Bundle();for(var e:peerTypes.getOrDefault(address,Map.of()).entrySet())types.putString(e.getKey(),e.getValue());result.putBundle("peerTypes",types);
             result.putString("routeNotice",routeNotices.get(address));
             result.putBoolean("remoteAudioOwner",handoff.remoteOwns(address));
@@ -824,7 +846,7 @@ final class BluetoothBackend extends Binder {
     }
     @Override protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) {
         if (code == INTERFACE_TRANSACTION) { reply.writeString(BridgeClient.DESCRIPTOR); return true; }
-        if (code < BridgeClient.STATUS || code > BridgeClient.HEAD_MOTION) return false;
+        if (code < BridgeClient.STATUS || code > BridgeClient.SPATIAL) return false;
         data.enforceInterface(BridgeClient.DESCRIPTOR);
         Context c = context;
         if (c == null || !mayControl(c, Binder.getCallingUid())) throw new SecurityException("Untrusted Bluetooth bridge caller");
@@ -921,6 +943,7 @@ final class BluetoothBackend extends Binder {
                         result.putString("title",ListeningModeNotice.title(event.mode()));
                     }
                 }
+                case BridgeClient.SPATIAL -> result=spatial.command(address,request);
                 case BridgeClient.HEAD_MOTION -> {
                     device(address); // Validate the address before reading/saving device-specific state.
                     String action=request.getString("action", "");

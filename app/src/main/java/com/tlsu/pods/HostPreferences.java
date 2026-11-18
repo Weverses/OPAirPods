@@ -413,11 +413,14 @@ final class HostPreferences {
         String[] p=snapshot.getStringArray("peers");String self=snapshot.getString("selfAddress");ArrayList<String> targets=new ArrayList<>(),names=new ArrayList<>();Bundle types=snapshot.getBundle("peerTypes");if(types==null)types=Bundle.EMPTY;
         if(p!=null)for(String peer:p)if(!peer.equals(self)){targets.add(peer);names.add(types.getString(peer,"另一台设备"));}
         entries(routeRow,names.toArray(new String[0]),targets.toArray(new String[0]));enabled(routeRow,multi&&attReady&&!busy&&!targets.isEmpty());
-        String source=snapshot.getString("audioSource");boolean otherSource=source!=null&&!source.equals(self)&&targets.contains(source)&&snapshot.getInt("audioSourceType")!=0;
+        String source=snapshot.getString("audioSource");boolean idle=snapshot.getInt("audioSourceType")==0;
+        boolean otherSource=source!=null&&!source.equals(self)&&targets.contains(source)&&!idle;
+        String selected=snapshot.getString("selectedAudioHost");
+        String idleRoute=selected==null?"空闲":"空闲（当前设备为"+(selected.equals(self)?"此手机":types.getString(selected,"另一台设备"))+"）";
         String routeText=!connected&&!ready?"耳机未连接":targets.isEmpty()?"已连接此手机":"已发现：此手机、"+String.join("、",names);
-        routeText+="；音频："+(snapshot.getInt("audioSourceType")==0?"空闲":source!=null&&source.equals(self)?"此手机":types.getString(source,"另一台设备"));
+        routeText+="；音频："+(idle?idleRoute:source!=null&&source.equals(self)?"此手机":types.getString(source,"另一台设备"));
         if(snapshot.getString("routeNotice")!=null)routeText+="\n"+snapshot.getString("routeNotice");summary(routeStatus,routeText);enabled(reverseRow,multi&&attReady&&!busy&&otherSource);
-        summary(pageEntries.get("routing"),!multi?"未开启 · 在设备之间切换耳机音频":targets.isEmpty()?"已开启 · 尚未发现其他设备":snapshot.getInt("audioSourceType")==0?"已开启 · 当前无音频播放":"音频来源："+(source!=null&&source.equals(self)?"此手机":types.getString(source,"另一台设备")));
+        summary(pageEntries.get("routing"),!multi?"未开启 · 在设备之间切换耳机音频":targets.isEmpty()?"已开启 · 尚未发现其他设备":idle?"已开启 · "+idleRoute:"音频来源："+(source!=null&&source.equals(self)?"此手机":types.getString(source,"另一台设备")));
     }
     private long updateAdaptiveStrength(boolean ready,Bundle controls,Bundle pending,Bundle updates,long now){
         Bundle update=updates.getBundle("2e");
