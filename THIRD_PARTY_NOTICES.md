@@ -16,6 +16,8 @@ Head motion tracking start/stop frames, the known raw motion sample offsets, and
 
 The raw movement direction polarity also follows the `utils/GestureFeedback.kt` convention at that revision. The synthesized feedback PCM, bounded output routing, and observed call outcome confirmation are implemented in this module; no upstream audio assets are included.
 
+BLE proximity key frames, address verification, and case battery decoding are adapted from `AACPManager.kt`, `BLEManager.kt`, and `utils/BluetoothCryptography.kt` at the same revision. ColorPods uses its own per-device source selection, scan lifecycle, and native battery callbacks.
+
 The integration uses independent API102 adapters and the host's original UI/runtime. It does not redistribute the proprietary host APKs.
 
 ## XZ Embedded
