@@ -62,11 +62,16 @@ final class HostTargets {
     static final String EXT_MANAGER_BATTERY_UPDATE = "ext.manager.updateBatteryInfo";
     static final String EXT_MANAGER_BATTERY_GET = "ext.manager.getBatteryInfo";
     static final String EXT_MANAGER_BATTERY_NOTIFY = "ext.manager.notifyBatteryLevelChanged";
+    static final String EXT_REMOTE_BATTERY_DISPATCH = "ext.remote.doReportBatteryLevelChanged";
+    static final String EXT_REMOTE_BATTERY_NOTIFY = "ext.remote.notifyBatteryLevelChanged";
+    static final String EXT_REMOTE_WEAR_NOTIFY = "ext.remote.notifyWearStatusChanged";
     static final String EXT_MANAGER_POD_STATUS = "ext.manager.updatePodStatus";
     static final String EXT_MANAGER_INSTANCE = "ext.manager.instance";
     static final String EXT_MEDIA_CLASS = "ext.media.class";
     static final String EXT_MEDIA_SEND_PLAY = "ext.media.sendPlay";
+    static final String EXT_MEDIA_SEND_PAUSE = "ext.media.sendPause";
     static final String EXT_MEDIA_POD_STATUS = "ext.media.onPodStatusChanged";
+    static final String EXT_MEDIA_DISCONNECTED = "ext.media.onDeviceDisconnected";
 
     // ---- MyDevices process -------------------------------------------------
     static final String UI_FRAGMENT_CLASS = "ui.fragment.class";
@@ -162,11 +167,17 @@ final class HostTargets {
         directMethod(EXT_MANAGER_BATTERY_UPDATE, DexKitHost.BLUETOOTH_EXT, MANAGER, "updateBatteryInfo", new String[]{"android.bluetooth.BluetoothDevice", "boolean", "int", "int", "int", "int", "int", "int"}, "void", 0);
         directMethod(EXT_MANAGER_BATTERY_GET, DexKitHost.BLUETOOTH_EXT, MANAGER, "getBatteryInfo", new String[]{"android.bluetooth.BluetoothDevice"}, "[I", 0);
         directMethod(EXT_MANAGER_BATTERY_NOTIFY, DexKitHost.BLUETOOTH_EXT, MANAGER, "notifyBatteryLevelChanged", new String[]{"android.bluetooth.BluetoothDevice", "[I"}, "void", 0);
+        String remoteDevices = "com.oplus.bluetooth.btservice.OplusRemoteDevicesExtImpl";
+        directMethod(EXT_REMOTE_BATTERY_DISPATCH, DexKitHost.BLUETOOTH_EXT, remoteDevices, "doReportBatteryLevelChanged", new String[]{"android.bluetooth.BluetoothDevice", "[I"}, "void", 0);
+        directMethod(EXT_REMOTE_BATTERY_NOTIFY, DexKitHost.BLUETOOTH_EXT, remoteDevices, "notifyBatteryLevelChanged", new String[]{"android.bluetooth.BluetoothDevice", "[I"}, "void", 0);
+        directMethod(EXT_REMOTE_WEAR_NOTIFY, DexKitHost.BLUETOOTH_EXT, remoteDevices, "notifyWearStatusChanged", new String[]{"android.bluetooth.BluetoothDevice", "int", "int"}, "void", 0);
         directMethod(EXT_MANAGER_POD_STATUS, DexKitHost.BLUETOOTH_EXT, MANAGER, "updatePodStatus", new String[]{"android.bluetooth.BluetoothDevice", "int", "int"}, "void", 0);
         directField(EXT_MANAGER_INSTANCE, DexKitHost.BLUETOOTH_EXT, MANAGER, "sInstance", MANAGER);
         directClass(EXT_MEDIA_CLASS, DexKitHost.BLUETOOTH_EXT, MEDIA);
         directMethod(EXT_MEDIA_SEND_PLAY, DexKitHost.BLUETOOTH_EXT, MEDIA, "sendPlay", NONE, "void", 0);
+        directMethod(EXT_MEDIA_SEND_PAUSE, DexKitHost.BLUETOOTH_EXT, MEDIA, "sendPause", new String[]{"boolean"}, "void", 0);
         directMethod(EXT_MEDIA_POD_STATUS, DexKitHost.BLUETOOTH_EXT, MEDIA, "onPodStatusChanged", new String[]{"boolean", "boolean"}, "void", 0);
+        directMethod(EXT_MEDIA_DISCONNECTED, DexKitHost.BLUETOOTH_EXT, MEDIA, "onDeviceDisconnected", new String[]{"android.bluetooth.BluetoothDevice"}, "void", 0);
 
         directClass(UI_FRAGMENT_CLASS, DexKitHost.MYDEVICES, FRAGMENT);
         directClass(UI_ACTIVITY_CLASS, DexKitHost.MYDEVICES, ACTIVITY);

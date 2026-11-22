@@ -43,8 +43,13 @@ final class NativeUi {
 
         hook(module,loader,PreferenceTargets.BIND,chain->{
             Object result=chain.proceed();
-            try{SystemSettingsSlider.bind(chain.getThisObject(),chain.getArg(0));}
-            catch(Exception e){module.error("System COUI slider binding failed",e);}
+            try{
+                Object holder=chain.getArg(0);
+                View root=(View)holder.getClass().getField("itemView").get(holder);
+                SystemSettingsSlider.bind(chain.getThisObject(),root);
+                EqualizerPanel.bind(chain.getThisObject(),root);
+            }
+            catch(Exception e){module.error("COUI audio preferences binding failed",e);}
             return result;
         });
         // Native observers keep their original preference objects even while

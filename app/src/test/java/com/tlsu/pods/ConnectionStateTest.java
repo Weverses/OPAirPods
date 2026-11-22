@@ -24,6 +24,13 @@ public class ConnectionStateTest {
     @Test public void aControlOnlyAclIsStillARealConnection(){
         assertEquals(ConnectionState.CONNECTED,ConnectionState.resolve(true,true,0,0));
     }
+    @Test public void freshAacpEvidenceRepairsAHostThatCannotSeeTheControlLink(){
+        assertEquals(ConnectionState.CONNECTED,ConnectionState.resolve(true,false,0,0,true));
+        assertEquals(ConnectionState.DISCONNECTED,ConnectionState.resolve(true,false,0,0,false));
+    }
+    @Test public void bluetoothOffOverridesStaleAacpEvidence(){
+        assertEquals(ConnectionState.DISCONNECTED,ConnectionState.resolve(false,true,2,2,true));
+    }
     @Test public void bluetoothOffOverridesStaleProfileStates(){
         assertEquals(ConnectionState.DISCONNECTED,ConnectionState.resolve(false,true,2,2));
     }

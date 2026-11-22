@@ -19,8 +19,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-// All settings and selection dialogs belong to the host's preference framework.
-// No module-owned views, AlertDialogs, styles, layouts, AndroidX or COUI copies.
+// Settings pages and selection dialogs use the host's preference framework.
 final class HostPreferences {
     private static final ExecutorService IO=Executors.newSingleThreadExecutor(r->{Thread t=new Thread(r,"ColorPodsCOUI");t.setDaemon(true);return t;});
     private final Object fragment;
@@ -34,8 +33,8 @@ final class HostPreferences {
     private final Map<Integer,Object> controls=new LinkedHashMap<>();
     private final Map<Integer,Object> listeningModeRows=new LinkedHashMap<>();
     private final Map<Integer,Object> stemRows=new LinkedHashMap<>();
-    private final Map<String,Object> eqRows=new LinkedHashMap<>();
     private Object eqToggle,eqReset;
+    private EqualizerPanel eqPanel;
     private CustomEq eqSelection;
     private StemConfig stemSelection;
     private Object headToggle,headMapping,headStatus,headStart,headStop;
@@ -53,6 +52,9 @@ final class HostPreferences {
     private final AdaptiveStrengthSlider adaptiveStrength;
     private final Runnable refreshTask=this::refresh;
     private Object vendorRow,routeRow,multiRow,autoMediaRow,autoGameReturnRow,routeStatus,reverseRow,root;
+    private Object controlRecoveryRow;
+    private boolean checkControlOnResume = true;
+    private boolean restoringControl;
     private Bundle snapshot=Bundle.EMPTY;
     private boolean active,busy,attLoading,attWasReady;
     private long nextAttLoad;
@@ -183,6 +185,8 @@ final class HostPreferences {
         int[] orders={10000,10001,10002};
         for(int i=0;i<existing.length;i++){Object row=Reflect.call(fragment,"findPreference",new Class[]{CharSequence.class},existing[i]);if(row!=null)targetCall(row,HostTargets.UI_PREF_ORDER,orders[i]);}
         Object home=category(root,"cat_colorpods_home","耳机功能",0);
+        controlRecoveryRow=add(home,"COUIJumpPreference","colorpods_restore_control","恢复耳机控制");
+        click(controlRecoveryRow,this::restoreControl);
         Object listening=page(home,"listening","聆听体验","空间音频、降噪与通透、听力辅助");
         Object controlsPage=page(home,"controls","耳机操控","佩戴检测、头部操控、按压与长按");
         Object routingPage=page(home,"routing","多设备连接","音频来源与设备切换");
@@ -213,10 +217,12 @@ final class HostPreferences {
         Object equalizer=category(eqPage,"cat_colorpods_eq","三段均衡器",0);
         eqToggle=add(equalizer,"COUISwitchPreference","colorpods_eq_enabled","自定义均衡器");
         featureChange(eqToggle,v->changeEq("enabled",(Boolean)v?1:0));
-        String[] bands={"low","mid","high"},bandNames={"低音","中音","高音"};
-        for(int i=0;i<bands.length;i++){
-            String band=bands[i];Object row=slider(equalizer,"colorpods_eq_"+band,bandNames[i]);eqRows.put(band,row);
-            featureChange(row,v->changeEq(band,(Integer)v));
+        Object eqEditor=add(equalizer,"COUIPreference","colorpods_eq_editor","");
+        targetCall(eqEditor,PreferenceTargets.SELECTABLE,false);
+        try{eqPanel=new EqualizerPanel(activity,eqEditor,this::changeEq);}
+        catch(Exception|LinkageError e){
+            summary(eqEditor,"当前系统无法加载原生竖向滑杆");
+            module.error("ColorOS vertical equalizer slider unavailable",e);
         }
         eqReset=add(equalizer,"COUIJumpPreference","colorpods_eq_reset","恢复标准音效");click(eqReset,()->changeEq("reset",0));
         Object experience=category(listening,"cat_colorpods_listening","智能聆听",100);
@@ -323,7 +329,7 @@ final class HostPreferences {
         int id=activity.getResources().getIdentifier("ll_operation_noise","id",activity.getPackageName());
         if(activity.findViewById(id)==selector)bindAdaptiveStrength();
     }
-    void resume(){headForeground=true;if(!active)start();main.post(this::connectionChanged);}
+    void resume(){if(!headForeground)checkControlOnResume=true;headForeground=true;if(!active)start();main.post(this::connectionChanged);}
     void pauseHeadMotion(){headForeground=false;stopHeadTest();}
     void headPageLeaving(){stopHeadTest();}
     void headPageChanged(){
@@ -345,13 +351,47 @@ final class HostPreferences {
         if(headOwner!=null&&!headTestVisible())stopHeadTest();
         Bundle b=request();if(headOwner!=null)b.putString("headMotionOwner",headOwner);
         IO.execute(()->{Bundle result=null;String error=null;try{result=bridge.request(BridgeClient.STATUS,b);}catch(Exception e){error=e.getMessage();}
-            Bundle r=result;String message=error;main.post(()->{if(!alive())return;if(r!=null){snapshot=r;connectionError=null;}else connectionError=message;try{update();}catch(Exception e){module.error("COUI update failed",e);}main.removeCallbacks(refreshTask);main.postDelayed(refreshTask,headOwner==null?2500:300);});});
+            Bundle r=result;String message=error;
+            main.post(()->{
+                if(!alive())return;
+                if (r != null) {
+                    snapshot = r;
+                    connectionError = null;
+                    connection.observeControl(b.getString("address"), r.getLong("controlReadyAt"));
+                } else connectionError = message;
+                try {
+                    update();
+                    if (headForeground && checkControlOnResume && !busy && r != null
+                            && r.getBoolean("controlRecoveryAvailable")
+                            && java.util.Objects.equals(b.getString("address"), address())) {
+                        checkControlOnResume = false;
+                        if (!r.getBoolean("controlReady")) restoreControl();
+                    }
+                } catch (Exception e) { module.error("COUI update failed", e); }
+                main.removeCallbacks(refreshTask);
+                main.postDelayed(refreshTask,headOwner==null?2500:300);
+            });});
+    }
+    private void restoreControl() {
+        if (!alive() || !headForeground || busy || !snapshot.getBoolean("controlRecoveryAvailable")
+                || snapshot.getBoolean("controlReady")) return;
+        Bundle args = request();
+        args.putBoolean("connectOnly", true);
+        restoringControl = true;
+        operation(BridgeClient.ROUTE, args, result -> {
+            snapshot = result;
+            connection.observeControl(args.getString("address"), result.getLong("controlReadyAt"));
+        }, () -> restoringControl = false);
     }
     private void update() throws Exception {
         bindAdaptiveStrength();
         int link=connection.state();
         boolean connected=link==ConnectionState.CONNECTED||(link==ConnectionState.UNKNOWN&&snapshot.getBoolean("connected"));
         boolean ready=link!=ConnectionState.DISCONNECTED&&snapshot.getBoolean("controlReady");long[] identity=snapshot.getLongArray("nativeStatus");
+        boolean canRestoreControl = snapshot.getBoolean("controlRecoveryAvailable") && !snapshot.getBoolean("controlReady");
+        targetCall(controlRecoveryRow,PreferenceTargets.VISIBLE,canRestoreControl);
+        enabled(controlRecoveryRow,canRestoreControl&&!busy);
+        summary(controlRecoveryRow,restoringControl?"正在连接耳机控制通道…":"连接后可调整耳机设置");
         enabled(vendorRow,identity!=null&&!busy);if(identity!=null)checked(vendorRow,identity[0]!=0);
         summary(vendorRow,"修改后需关闭再开启蓝牙");
         updateAudioSettings(ready);
@@ -453,11 +493,11 @@ final class HostPreferences {
         int[] actions=snapshot.getIntArray("stemActions");return actions==null?StemConfig.defaults():new StemConfig(actions);
     }
     private void updateAudioSettings(boolean ready)throws Exception{
-        boolean editable=ready&&!busy&&snapshot.getInt("advancedControlsVersion")>=2;
+        boolean available=ready&&snapshot.getInt("advancedControlsVersion")>=2;
+        boolean editable=available&&!busy;
         CustomEq eq=currentEq();checked(eqToggle,eq.enabled());enabled(eqToggle,editable);
         summary(eqToggle,snapshot.getBoolean("eqKnown")?"":"首次使用从标准音效开始");
-        int[] values={eq.low(),eq.mid(),eq.high()};int index=0;
-        for(Object row:eqRows.values()){int value=values[index++];sliders.get(row).value(value);enabled(row,editable&&eq.enabled());summary(row,value+"%");}
+        if(eqPanel!=null)eqPanel.update(eq,available,busy);
         enabled(eqReset,editable&&eq.enabled());
         StemConfig config=currentStem();
         for(var entry:stemRows.entrySet()){

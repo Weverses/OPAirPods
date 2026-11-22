@@ -96,11 +96,13 @@ final class SpatialAudioController {
     private String clearKey(String addr) { return "spatialClearTracker."+addr; }
     private String basisKey(String addr) { return "spatialHeadAxes." + addr; }
     private String route() {
+        if (audio == null) return null;
         List<AudioDeviceInfo> devices=audio.getAudioDevicesForAttributes(MEDIA);
         if (devices.size()!=1 || devices.get(0).getType()!=AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) return null;
         String addr=devices.get(0).getAddress().toUpperCase(java.util.Locale.ROOT);
         return BluetoothAdapter.checkBluetoothAddress(addr) ? addr : null;
     }
+    String mediaAddress() { return route(); }
     private boolean current() { return address!=null && socket!=null && transport.connection(address)==socket && address.equals(route()); }
     private void set(String command) throws IOException {
         if (!current()) throw new IOException("媒体输出已切换");
@@ -140,7 +142,7 @@ final class SpatialAudioController {
         if (!BluetoothAdapter.checkBluetoothAddress(addr) || worker==null) throw new IOException("耳机尚未就绪");
         String action=args.getString("action","");
         if (action.equals("status")) return status(addr);
-        FutureTask<Bundle> work = new FutureTask<>(() -> {
+        return schedule(() -> {
             switch (action) {
                 case "mode" -> selectMode(addr, args.getInt("mode", UNSET));
                 case "recenter" -> { requireTracking(addr); orientation.recenter(); }
@@ -150,6 +152,17 @@ final class SpatialAudioController {
             reconcile();
             return status(addr);
         });
+    }
+    void selectFromVolumePanel(String addr, int mode, BooleanSupplier valid) throws Exception {
+        schedule(() -> {
+            if (!valid.getAsBoolean()) throw new IOException("媒体输出已切换");
+            selectMode(addr, mode);
+            changed();
+            return null;
+        });
+    }
+    private Bundle schedule(java.util.concurrent.Callable<Bundle> action) throws Exception {
+        FutureTask<Bundle> work = new FutureTask<>(action);
         worker.post(work);
         try { return work.get(5,TimeUnit.SECONDS); }
         catch (java.util.concurrent.ExecutionException e) { throw new IOException(e.getCause().getMessage(),e.getCause()); }

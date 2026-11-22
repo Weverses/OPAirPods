@@ -21,6 +21,14 @@ public final class DeviceSmoke extends Instrumentation {
     @Override public void onStart(){
         try{
             BridgeClient bridge=new BridgeClient(getTargetContext());String address=null;Bundle status=null;String error="";long until=SystemClock.elapsedRealtime()+30_000;
+            if ("restoreControl".equals(probe)) {
+                verifyControlRecovery(bridge);
+                return;
+            }
+            if ("controlOpen".equals(probe) || "controlRead".equals(probe)) {
+                probeControlConnection(bridge, "controlOpen".equals(probe));
+                return;
+            }
             if(spatialStatus){
                 Bundle request=BridgeClient.forDevice(statusAddress);request.putString("action","status");
                 Bundle state=bridge.request(BridgeClient.SPATIAL,request);
@@ -67,6 +75,10 @@ public final class DeviceSmoke extends Instrumentation {
                     emit("Game return candidate: pending="+state.getBoolean("gameReturnPending")+" returning="+state.getBoolean("gameReturning"));
                     emit("Advanced controls: EQ known="+state.getBoolean("eqKnown")+" stem active="+state.getBoolean("stemReady")
                             +" EQ confirmation="+state.getInt("eqConfirmation"));
+                    if (state.getInt("caseBatteryVersion") > 0) {
+                        emit("Case battery: source="+state.getString("caseBatterySource")
+                                +" level="+state.getInt("caseBatteryLevel")+" status="+state.getInt("caseBatteryStatus"));
+                    }
                     Bundle head=state.getBundle("headMotion");
                     if(head!=null)emit("Head availability: available="+head.getBoolean("available")+" enabled="+head.getBoolean("enabled")
                             +" active="+head.getBoolean("active")+" reason="+head.getString("message","")
@@ -250,6 +262,51 @@ public final class DeviceSmoke extends Instrumentation {
             emit(dropped?"PASS: control available after 70s with recovery":"PASS: control remained connected throughout 70s after handoff");
         }finally{session.release();try{track.stop();}catch(IllegalStateException ignored){}track.release();}
     }
+    private void verifyControlRecovery(BridgeClient bridge) throws Exception {
+        if (!BluetoothAdapter.checkBluetoothAddress(statusAddress)) throw new IllegalArgumentException("Supply the paired AirPods address");
+        var audio = getTargetContext().getSystemService(android.media.AudioManager.class);
+        var media = new android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA).build();
+        var output = audio.getAudioDevicesForAttributes(media).stream().map(d -> d.getType() + "/" + d.getAddress()).toList();
+        Bundle request = BridgeClient.forDevice(statusAddress);
+        Bundle before = bridge.request(BridgeClient.STATUS, request);
+        if (!before.getBoolean("controlRecoveryAvailable")) throw new AssertionError("Control recovery unavailable");
+        if (before.getBoolean("controlReady")) throw new AssertionError("Run after AirPods control has disconnected");
+        emit("Requesting AACP recovery with the current Android media output");
+        boolean remote = before.getBoolean("remoteAudioOwner");
+        request.putBoolean("connectOnly", true);
+        Bundle after = bridge.request(BridgeClient.ROUTE, request);
+        if (!after.getBoolean("controlReady")) throw new AssertionError("AACP did not reconnect");
+        emit("AACP reconnected; checking for settings and route changes");
+        Bundle statusRequest = BridgeClient.forDevice(statusAddress);
+        long end = SystemClock.elapsedRealtime() + 6500;
+        do {
+            SystemClock.sleep(250);
+            after = bridge.request(BridgeClient.STATUS, statusRequest);
+            if (!after.getBoolean("controlReady")) throw new AssertionError("Recovered AACP disconnected");
+            if (after.getInt("audioSourceType") != 0 && after.getString("selfAddress", "").equals(after.getString("audioSource"))) {
+                throw new AssertionError("AACP recovery started local AirPods audio");
+            }
+            if (!output.equals(audio.getAudioDevicesForAttributes(media).stream().map(d -> d.getType() + "/" + d.getAddress()).toList())) {
+                throw new AssertionError("AACP recovery changed the Android media output");
+            }
+        } while (SystemClock.elapsedRealtime() < end);
+        if (remote && !after.getBoolean("remoteAudioOwner")) throw new AssertionError("Remote ownership was lost");
+        Bundle controls = after.getBundle("controls");
+        if (controls == null || controls.isEmpty()) throw new AssertionError("No fresh settings received after recovery");
+        emit("PASS: restored AACP with fresh settings and preserved the media route; reports=" + controls.size());
+    }
+    private void probeControlConnection(BridgeClient bridge, boolean open) throws Exception {
+        if (!BluetoothAdapter.checkBluetoothAddress(statusAddress)) {
+            throw new IllegalArgumentException("Supply the paired AirPods address");
+        }
+        Bundle request = BridgeClient.forDevice(statusAddress);
+        request.putBoolean(open ? "connectOnly" : "refreshControls", true);
+        Bundle state = bridge.request(open ? BridgeClient.ROUTE : BridgeClient.STATUS, request);
+        emit("AACP ready=" + state.getBoolean("controlReady") + " session=" + state.getInt("controlSessions")
+                + " drops=" + state.getInt("controlDrops") + " openedAt=" + state.getLong("controlOpenedAt")
+                + " remote=" + state.getBoolean("remoteAudioOwner") + " sourceType=" + state.getInt("audioSourceType"));
+    }
+
     private void probe(BridgeClient bridge,String address,Bundle status)throws Exception{
         var saved=getTargetContext().getSharedPreferences("device_smoke_probe",0);int current=status.getBundle("controls").getByteArray("17")[0]&255;
         if(probe.equals("set")){

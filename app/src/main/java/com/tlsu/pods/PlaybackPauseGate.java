@@ -7,7 +7,7 @@ final class PlaybackPauseGate {
     enum Action { READY, WAIT, PAUSE, TIMEOUT }
     private final long deadline;
     private long nextPause;
-    PlaybackPauseGate(long now){deadline=now+2000;nextPause=now;}
+    PlaybackPauseGate(long now,boolean pauseSent){deadline=now+2000;nextPause=pauseSent?now+300:now;}
     Action check(boolean paused,long now){
         if(paused)return Action.READY;
         if(now>=deadline)return Action.TIMEOUT;

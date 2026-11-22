@@ -11,6 +11,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.os.SystemClock;
 import android.view.View;
 import java.util.HashMap;
 import java.util.Map;
@@ -19,6 +20,7 @@ import java.lang.reflect.Modifier;
 
 /** Reconcile the host's cached connection state without connecting or claiming audio. */
 final class HostConnection {
+    private static final long CONTROL_STATUS_MAX_AGE_MS = 4000;
     private final Activity activity;
     private final ColorPodsModule module;
     private final Runnable changed;
@@ -26,6 +28,8 @@ final class HostConnection {
     private final Map<Integer,BluetoothProfile> profiles=new HashMap<>();
     private boolean active,registered;
     private int generation;
+    private String controlAddress;
+    private long controlReadyAt, controlDisconnectedAt;
     private BluetoothProfile.ServiceListener listener(int session){return new BluetoothProfile.ServiceListener(){
         @Override public void onServiceConnected(int id,BluetoothProfile proxy){
             if(!active||session!=generation){adapter.closeProfileProxy(id,proxy);return;}
@@ -42,6 +46,10 @@ final class HostConnection {
                 BluetoothDevice current=device();
                 BluetoothDevice event=intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE,BluetoothDevice.class);
                 if(!BluetoothAdapter.ACTION_STATE_CHANGED.equals(intent.getAction())&&(current==null||!current.equals(event)))return;
+                if (BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(intent.getAction()) || !adapter.isEnabled()) {
+                    controlReadyAt = 0;
+                    controlDisconnectedAt = SystemClock.elapsedRealtime();
+                }
                 changed.run();
             }catch(Exception e){module.error("Host connection event failed",e);}
         }
@@ -65,6 +73,8 @@ final class HostConnection {
     void stop(){
         if(!active)return;active=false;generation++;if(registered){activity.unregisterReceiver(receiver);registered=false;}
         for(var entry:profiles.entrySet())adapter.closeProfileProxy(entry.getKey(),entry.getValue());profiles.clear();
+        controlAddress = null;
+        controlReadyAt = 0;
     }
     private Integer profileState(int id,BluetoothDevice device){
         BluetoothProfile proxy=profiles.get(id);if(proxy==null)return null;
@@ -72,7 +82,15 @@ final class HostConnection {
     }
     private int state(BluetoothDevice device){
         Boolean acl=null;try{acl=(Boolean)Reflect.call(device,"isConnected",new Class[0]);}catch(ReflectiveOperationException ignored){}
-        return ConnectionState.resolve(adapter.isEnabled(),acl,profileState(BluetoothProfile.A2DP,device),profileState(BluetoothProfile.HEADSET,device));
+        boolean controlReady = device.getAddress().equals(controlAddress)
+                && controlReadyAt > controlDisconnectedAt
+                && SystemClock.elapsedRealtime() - controlReadyAt <= CONTROL_STATUS_MAX_AGE_MS;
+        return ConnectionState.resolve(adapter.isEnabled(),acl,profileState(BluetoothProfile.A2DP,device),profileState(BluetoothProfile.HEADSET,device),controlReady);
+    }
+    void observeControl(String address, long readyAt) {
+        controlAddress = address;
+        controlReadyAt = readyAt;
+        reconcile();
     }
     int state(){
         if(!active)return ConnectionState.UNKNOWN;

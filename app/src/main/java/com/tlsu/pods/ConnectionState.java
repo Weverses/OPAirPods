@@ -5,8 +5,11 @@ package com.tlsu.pods;
 final class ConnectionState {
     static final int UNKNOWN=-1, DISCONNECTED=0, CONNECTED=2;
     static int resolve(boolean bluetoothEnabled,Boolean acl,Integer a2dp,Integer headset){
+        return resolve(bluetoothEnabled, acl, a2dp, headset, false);
+    }
+    static int resolve(boolean bluetoothEnabled,Boolean acl,Integer a2dp,Integer headset,boolean controlReady){
         if(!bluetoothEnabled)return DISCONNECTED;
-        if(Boolean.TRUE.equals(acl)||Integer.valueOf(CONNECTED).equals(a2dp)||Integer.valueOf(CONNECTED).equals(headset))return CONNECTED;
+        if(controlReady||Boolean.TRUE.equals(acl)||Integer.valueOf(CONNECTED).equals(a2dp)||Integer.valueOf(CONNECTED).equals(headset))return CONNECTED;
         return Boolean.FALSE.equals(acl)?DISCONNECTED:UNKNOWN;
     }
     // Only an active user/playback request may page an earbud without proven ACL.

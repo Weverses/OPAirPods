@@ -55,7 +55,7 @@ public class ProtocolTest {
         assertNull(Protocol.reportedValue(0x1a,new byte[]{2,0,0,0}));assertNull(Protocol.reportedValue(0xff,new byte[]{1}));
     }
     @Test public void rejectsUnexposedAndMalformedCommands() {
-        for (int command : new int[]{0x06,0x0d,0x39,0xff}) {
+        for (int command : new int[]{0x06,0x0d,0x28,0x39,0xff}) {
             assertThrows(IllegalArgumentException.class, () -> Protocol.control(command,new byte[]{1}));
         }
         assertThrows(IllegalArgumentException.class, () -> Protocol.control(0x2c,new byte[]{1}));

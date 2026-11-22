@@ -2,6 +2,7 @@
 package com.tlsu.pods;
 
 import android.content.Context;
+import android.content.res.Configuration;
 import android.content.res.XmlResourceParser;
 import android.util.Xml;
 import android.view.ContextThemeWrapper;
@@ -27,17 +28,27 @@ final class SystemSettingsSlider {
     private boolean enabled,tracking;
 
     SystemSettingsSlider(Context host,Object row)throws Exception {
+        context=themedContext(host);
+        type=Class.forName(TYPE,true,context.getClassLoader());
+        // Construct once before registering, so missing firmware resources fail at injection.
+        view=create();ROWS.put(row,this);
+    }
+    static Context themedContext(Context host)throws Exception {
         Context pkg=host.createPackageContext(PACKAGE,Context.CONTEXT_INCLUDE_CODE|Context.CONTEXT_IGNORE_SECURITY);
         Context application=host.getApplicationContext();
         if(application==null)throw new IllegalStateException("Host application unavailable");
+        int night=host.getResources().getConfiguration().uiMode&Configuration.UI_MODE_NIGHT_MASK;
+        Configuration settings=pkg.getResources().getConfiguration();
+        if((settings.uiMode&Configuration.UI_MODE_NIGHT_MASK)!=night){
+            Configuration override=new Configuration();
+            override.uiMode=(settings.uiMode&~Configuration.UI_MODE_NIGHT_MASK)|night;
+            pkg=pkg.createConfigurationContext(override);
+        }
         // A foreign package Context has resources/code but no running Application.
         // COUI registers its haptic observer when attached, using this accessor.
-        context=new ContextThemeWrapper(pkg,resource(pkg,"style","AppBaseTheme.NoActionBar")){
+        return new ContextThemeWrapper(pkg,resource(pkg,"style","AppBaseTheme.NoActionBar")){
             @Override public Context getApplicationContext(){return application;}
         };
-        type=Class.forName(TYPE,true,pkg.getClassLoader());
-        // Construct once before registering, so missing firmware resources fail at injection.
-        view=create();ROWS.put(row,this);
     }
     private static int resource(Context context,String kind,String name){
         int id=context.getResources().getIdentifier(name,kind,PACKAGE);
@@ -68,8 +79,7 @@ final class SystemSettingsSlider {
     void onChange(IntConsumer action){commit=action;}
     void value(int value)throws Exception{this.value=Math.max(0,Math.min(100,value));if(!tracking)type.getMethod("setProgress",int.class).invoke(view,this.value);}
     void enabled(boolean enabled){this.enabled=enabled;if(!tracking)view.setEnabled(enabled);}
-    static void bind(Object row,Object holder)throws Exception {
-        View root=(View)holder.getClass().getField("itemView").get(holder);
+    static void bind(Object row,View root)throws Exception {
         View previous=root.findViewWithTag(TAG);
         SystemSettingsSlider slider=ROWS.get(row);
         if(slider!=null&&previous==slider.view){

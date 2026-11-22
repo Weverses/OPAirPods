@@ -30,6 +30,11 @@ public final class ColorPodsModule extends XposedModule {
     @Override public void onPackageReady(PackageReadyParam param) {
         String pkg = param.getPackageName();
         ClassLoader loader = param.getClassLoader();
+        if (pkg.equals("com.android.systemui")) {
+            try { QuickAudioPanel.install(this, loader); }
+            catch (Throwable e) { error("Quick Settings volume panel unavailable", e); }
+            return;
+        }
         String sourceDir = param.getApplicationInfo() == null ? null : param.getApplicationInfo().sourceDir;
         TargetCache.init(this, param.getApplicationInfo(), pkg);
 
@@ -78,7 +83,7 @@ public final class ColorPodsModule extends XposedModule {
 
         hookTarget(HostTargets.BT_STUB_ON_TRANSACT, loader, chain -> {
             int code = (int) chain.getArg(0) - BridgeClient.TRANSACTION_BASE;
-            if (code < BridgeClient.STATUS || code > BridgeClient.SPATIAL)
+            if (code < BridgeClient.STATUS || code > BridgeClient.QUICK_AUDIO)
                 return chain.proceed();
             Object receiver = chain.getThisObject();
             // The enhancer belongs to the OEM extension jar, which is added
@@ -135,7 +140,7 @@ public final class ColorPodsModule extends XposedModule {
         if (managerHooked || cls == null) return;
         managerHooked = true;
         ClassLoader host = cls.getClassLoader();
-        try { CaseBatteryHooks.installBluetooth(this, host, backend.caseBattery); }
+        try { backend.caseBatteryPublisher = CaseBatteryHooks.installBluetooth(this, host, backend); }
         catch (Throwable e) { error("Case battery adapter unavailable", e); }
         for (var ctor : cls.getDeclaredConstructors()) {
             try {
@@ -176,6 +181,22 @@ public final class ColorPodsModule extends XposedModule {
             }
             return chain.proceed();
         });
+        EarDetectionPause wearPause = new EarDetectionPause();
+        hookTarget(HostTargets.EXT_MEDIA_POD_STATUS, host, chain -> {
+            wearPause.wear((boolean) chain.getArg(0), (boolean) chain.getArg(1), android.os.SystemClock.elapsedRealtime());
+            return chain.proceed();
+        });
+        hookTarget(HostTargets.EXT_MEDIA_SEND_PAUSE, host, chain -> {
+            if (!(boolean) chain.getArg(0) && !wearPause.allow(android.os.SystemClock.elapsedRealtime())) {
+                info("Ignored stale ear-detection pause");
+                return null;
+            }
+            return chain.proceed();
+        });
+        hookTarget(HostTargets.EXT_MEDIA_DISCONNECTED, host, chain -> {
+            wearPause.disconnected();
+            return chain.proceed();
+        });
         hookTarget(HostTargets.EXT_MANAGER_CLOSE, host, chain -> {
             Object result = chain.proceed();
             backend.disconnected((android.bluetooth.BluetoothDevice) chain.getArg(0));
@@ -185,9 +206,12 @@ public final class ColorPodsModule extends XposedModule {
         // OEM AOT callers can contain inlined copies of a hooked method.
         String connectName = HostTargets.memberName(HostTargets.EXT_MANAGER_CONNECT, host);
         String podStatusName = HostTargets.memberName(HostTargets.EXT_MEDIA_POD_STATUS, host);
+        String managerWearName = HostTargets.memberName(HostTargets.EXT_MANAGER_POD_STATUS, host);
+        String disconnectName = HostTargets.memberName(HostTargets.EXT_MANAGER_CLOSE, host);
         Class<?> media = HostTargets.typeOrNull(HostTargets.EXT_MEDIA_CLASS, host);
         for (var caller : cls.getDeclaredMethods()) {
-            if (caller.isSynthetic() || (connectName != null && caller.getName().contains(connectName))) deoptimize(caller);
+            if (caller.isSynthetic() || caller.getName().equals(managerWearName) || caller.getName().equals(disconnectName)
+                    || (connectName != null && caller.getName().contains(connectName))) deoptimize(caller);
         }
         if (media != null) {
             for (var caller : media.getDeclaredMethods()) {
