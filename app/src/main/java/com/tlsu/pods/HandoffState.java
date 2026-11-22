@@ -37,6 +37,7 @@ final class HandoffState {
         return remote(address);
     }
     synchronized void local(String address){State s=state(address);s.remote=false;s.claiming=false;s.generation++;s.recoveries=0;}
+    synchronized void retainLocal(Ticket ticket){if(claiming(ticket))local(ticket.address());}
     synchronized Ticket beginClaim(String address){State s=state(address);if(!s.claiming)s.restoreRemote=s.remote;else if(s.selected)s.restoreRemote=false;s.claiming=true;s.armed=false;s.selected=false;s.remote=false;return new Ticket(address,++s.generation);}
     synchronized void arm(Ticket ticket){if(claiming(ticket)){State s=state(ticket.address());s.armed=true;s.selected=false;}}
     synchronized void cancel(String address){State s=state(address);if(s.claiming)s.remote=s.restoreRemote&&!s.selected;s.claiming=false;s.selected=false;s.generation++;}

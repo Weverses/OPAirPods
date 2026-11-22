@@ -26,6 +26,9 @@ final class GameReturnState {
         target=game;peer=null;heardRemote=false;returning=false;idleAt=-1;localMedia=false;
         return ++generation;
     }
+    synchronized void selectedLocalIdle(){
+        if(target==null)localMedia=true;
+    }
     synchronized void source(String self,String source,int type,long now){
         if(self.equals(source)){
             if(type==2){if(!returning)cancel();localMedia=true;}
@@ -37,10 +40,13 @@ final class GameReturnState {
             if(target==null)return;
             if(returning||peer!=null&&!peer.equals(source)){cancel();return;}
             peer=source;heardRemote=true;idleAt=-1;recoveryUntil=-1;
-        }else if(type==0&&heardRemote&&source.equals(peer)&&!returning&&idleAt<0)idleAt=now;
+        }else if(type==0&&heardRemote&&(source.equals(peer)||source.equals(Routing.NO_SOURCE))&&!returning&&idleAt<0)idleAt=now;
     }
     synchronized void remoteRequest(String sender){
-        if(target!=null&&(returning||peer!=null&&!peer.equals(sender)))cancel();
+        if(target!=null){
+            if(returning||peer!=null&&!peer.equals(sender))cancel();
+            else peer=sender;
+        }
         localMedia=false;
     }
     synchronized void playback(String sender,Boolean playing,boolean call,long now){

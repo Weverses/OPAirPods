@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Locale;
 
 final class Routing {
+    static final String NO_SOURCE="00:00:00:00:00:00";
     private Routing() {}
     static boolean header(byte[] d, int n) {
         return d != null && n >= 6 && n <= d.length && d[0]==4 && d[1]==0 && d[2]==4 && d[3]==0 && d[5]==0;
@@ -63,9 +64,14 @@ final class Routing {
     static boolean needsReclaim(String self, String source, int type, boolean remoteOwns, List<Peer> records) {
         if (type != 0 && source != null) return !self.equals(source);
         if (remoteOwns) return true;
-        // A pause clears the streaming source while the TiPi owner can stay selected.
-        if (self.equals(selectedHost(records))) return false;
+        if (locallySelected(self, source, type, records)) return false;
         return records.stream().anyMatch(peer -> peer.role() != 0 && !self.equals(peer.address()));
+    }
+    static boolean locallySelected(String self, String source, int type, List<Peer> records) {
+        if (type != 0 && source != null) return self.equals(source);
+        // While idle, the TiPi owner can stay selected even when the streaming source clears.
+        String owner = selectedHost(records);
+        return self.equals(owner == null ? source : owner);
     }
     static String target(String self,String requested,String source,List<Peer> records){
         var active=records.stream().filter(p->!p.address().equals(self)&&p.role()!=0).collect(java.util.stream.Collectors.toList());

@@ -29,6 +29,13 @@ public class RoutingTest {
         assertNull(Routing.selectedHost(peers));
         assertFalse(Routing.needsReclaim("self",null,0,false,peers));
     }
+    @Test public void anIdleLocalSourceKeepsItsRouteInTheAbsenceOfAnotherOwner(){
+        var unselected=java.util.List.of(new Routing.Peer("self",2,4),new Routing.Peer("mac",2,1));
+        var remoteSelected=java.util.List.of(new Routing.Peer("self",2,4),new Routing.Peer("mac",2,3));
+        assertFalse(Routing.needsReclaim("self","self",0,false,unselected));
+        assertTrue(Routing.needsReclaim("self","self",0,true,unselected));
+        assertTrue(Routing.needsReclaim("self","self",0,false,remoteSelected));
+    }
     @Test public void resumingCanReclaimFromASelectedRemoteHostEvenWhenItIsIdle(){
         var peers=java.util.List.of(new Routing.Peer("self",2,5),new Routing.Peer("mac",2,3));
         assertEquals("mac",Routing.selectedHost(peers));

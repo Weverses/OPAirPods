@@ -21,6 +21,22 @@ public class GameReturnStateTest {
         GameReturnState s=localGame();long id=loan(s);s.playback(MAC,false,false,500);
         assertTrue(s.due(id,2300));
     }
+    @Test public void selectedLocalIdleCanLendToAConfirmedPeerWithoutASourceChange(){
+        GameReturnState s=new GameReturnState();s.selectedLocalIdle();long id=s.capture(GAME);
+        s.remoteRequest(MAC);s.playback(MAC,false,false,300);assertFalse(s.due(id,3000));
+        s.playback(MAC,true,false,400);s.playback(MAC,false,false,500);
+        assertTrue(s.due(id,2300));
+    }
+    @Test public void emptySourcePausesOnlyAPreviouslyConfirmedBorrower(){
+        GameReturnState s=localGame();long id=s.capture(GAME);s.remoteRequest(MAC);
+        s.source(SELF,Routing.NO_SOURCE,0,200);assertFalse(s.due(id,5000));
+        s.source(SELF,MAC,2,6000);s.source(SELF,Routing.NO_SOURCE,0,6500);
+        assertTrue(s.due(id,8300));assertEquals(MAC,s.peer());
+    }
+    @Test public void localIdleDuringBorrowDoesNotReplaceTheBorrower(){
+        GameReturnState s=localGame();long id=loan(s);s.selectedLocalIdle();
+        assertFalse(s.localMedia());assertTrue(s.current(id));
+    }
     @Test public void silenceWithoutAStopPacketNeverTriggersReturn(){
         GameReturnState s=localGame();long id=loan(s);assertFalse(s.due(id,1000000));
     }

@@ -150,4 +150,15 @@ public class HandoffStateTest {
         HandoffState s=new HandoffState();var claim=s.beginClaim("buds");s.disconnected("buds");
         assertNotNull(s.requestRemote("buds"));assertFalse(s.preparing(claim));
     }
+    @Test public void aLocalSelectionFoundDuringPreparationPreventsRollbackToThePeer(){
+        HandoffState s=new HandoffState();s.remote("buds");var claim=s.beginClaim("buds");
+        s.retainLocal(claim);
+        assertFalse(s.claiming(claim));assertFalse(s.remoteOwns("buds"));
+        assertNull(s.finishClaim(claim,false));
+    }
+    @Test public void stalePreparationCannotClearANewRemoteTakeover(){
+        HandoffState s=new HandoffState();var claim=s.beginClaim("buds");var remote=s.requestRemote("buds");
+        s.retainLocal(claim);
+        assertTrue(s.current(remote));
+    }
 }
