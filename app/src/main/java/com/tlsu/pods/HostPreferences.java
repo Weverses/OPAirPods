@@ -271,7 +271,8 @@ final class HostPreferences {
         Object routing=category(routingPage,"cat_colorpods_routing","设备切换",0);
         multiRow=add(routing,"COUISwitchPreference","colorpods_multipoint","多设备协同");
         change(multiRow,value->{Bundle b=request();b.putBoolean("enabled",(Boolean)value);operation(BridgeClient.MULTIPOINT,b,r->{snapshot=r;});});
-        autoMediaRow=add(routing,"COUISwitchPreference","colorpods_auto_media","手机播放时自动切回");
+        autoMediaRow=add(routing,"COUISwitchPreference","colorpods_auto_media","耳机空闲时自动切回");
+        summary(autoMediaRow,"手机开始播放且耳机空闲时自动切回，其他设备正在播放或通话时保留当前音频");
         change(autoMediaRow,value->{Bundle b=request();b.putBoolean("autoMedia",(Boolean)value);operation(BridgeClient.MULTIPOINT,b,r->{snapshot=r;});});
         autoGameReturnRow=add(routing,"COUISwitchPreference","colorpods_auto_game_return","远端暂停后返回游戏");
         summary(autoGameReturnRow,"其他设备暂停后，自动切回仍在前台发声的游戏");

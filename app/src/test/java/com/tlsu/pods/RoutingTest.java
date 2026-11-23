@@ -1,7 +1,62 @@
 package com.tlsu.pods;
+
+import java.util.List;
+import java.util.Map;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public class RoutingTest {
+    private static final List<Routing.Peer> TWO_HOSTS=List.of(
+            new Routing.Peer("self",2,4),new Routing.Peer("mac",2,3));
+
+    private static Routing.PeerPlayback playback(String peer,boolean playing,int category,long sequence){
+        return new Routing.PeerPlayback(new Routing.Message(peer,null,false,false,false,playing,category),sequence);
+    }
+
+    @Test public void macLivestreamKeepsAudioWhenAndroidStartsPlaying(){
+        assertFalse(Routing.canAutomaticallySwitch("self","mac",2,10,TWO_HOSTS,Map.of(),false));
+        assertFalse(Routing.canAutomaticallySwitch("self","mac",2,10,TWO_HOSTS,
+                Map.of("mac",playback("mac",false,100,11)),false));
+    }
+    @Test public void macPauseAllowsAutomaticSwitchButResumingCancelsIt(){
+        assertTrue(Routing.canAutomaticallySwitch("self",Routing.NO_SOURCE,0,11,TWO_HOSTS,Map.of(),false));
+        assertFalse(Routing.canAutomaticallySwitch("self","mac",2,10,TWO_HOSTS,
+                Map.of("mac",playback("mac",true,301,12)),false));
+    }
+    @Test public void gameReturnAcceptsAPauseNewerThanTheBorrowersMediaSource(){
+        var paused=Map.of("mac",playback("mac",false,100,11));
+        assertTrue(Routing.canAutomaticallySwitch("self","mac",2,10,TWO_HOSTS,paused,true));
+        assertFalse(Routing.canAutomaticallySwitch("self","mac",2,12,TWO_HOSTS,paused,true));
+        assertFalse(Routing.canAutomaticallySwitch("self","mac",2,12,TWO_HOSTS,
+                Map.of("mac",playback("mac",true,301,13)),true));
+    }
+    @Test public void aFreshPlaybackReportCanProtectTheRouteBeforeSourceChanges(){
+        var starting=playback("mac",true,301,11);
+        assertFalse(Routing.canAutomaticallySwitch("self",Routing.NO_SOURCE,0,10,TWO_HOSTS,Map.of("mac",starting),false));
+        assertTrue(Routing.canAutomaticallySwitch("self",Routing.NO_SOURCE,0,12,TWO_HOSTS,Map.of("mac",starting),false));
+    }
+    @Test public void aPauseFromADifferentDeviceCannotReleaseTheActiveSource(){
+        assertFalse(Routing.canAutomaticallySwitch("self","mac",2,10,TWO_HOSTS,
+                Map.of("ipad",playback("ipad",false,100,11)),true));
+    }
+    @Test public void remoteCallsAlwaysBlockAutomaticSwitch(){
+        assertFalse(Routing.canAutomaticallySwitch("self","mac",1,10,TWO_HOSTS,
+                Map.of("mac",playback("mac",false,100,11)),true));
+        assertFalse(Routing.canAutomaticallySwitch("self",Routing.NO_SOURCE,0,12,TWO_HOSTS,
+                Map.of("mac",playback("mac",true,501,11)),false));
+    }
+    @Test public void reconnectRequiresFreshEvidenceOfAnIdleRoute(){
+        assertFalse(Routing.canAutomaticallySwitch("self",null,0,0,null,Map.of(),false));
+        assertFalse(Routing.canAutomaticallySwitch("self",null,0,0,TWO_HOSTS,Map.of(),false));
+        assertTrue(Routing.canAutomaticallySwitch("self",null,0,0,TWO_HOSTS,
+                Map.of("mac",playback("mac",false,100,1)),false));
+        assertTrue(Routing.canAutomaticallySwitch("self",Routing.NO_SOURCE,0,1,TWO_HOSTS,Map.of(),false));
+    }
+    @Test public void disconnectedDevicesDoNotBlockTheCurrentRoute(){
+        var records=List.of(new Routing.Peer("self",2,4),new Routing.Peer("ipad",0,1));
+        assertTrue(Routing.canAutomaticallySwitch("self",null,0,0,records,
+                Map.of("ipad",playback("ipad",true,501,1)),false));
+    }
+
     @Test public void threeHostRoutingUsesTheActualSourceRegardlessOfRecordOrder(){
         var peers=java.util.List.of(new Routing.Peer("phone",2,1),new Routing.Peer("mac",2,3),new Routing.Peer("self",2,1));
         assertEquals("mac",Routing.target("self",null,null,peers));

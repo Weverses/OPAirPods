@@ -88,6 +88,30 @@ final class Routing {
         boolean decisive(){return Boolean.FALSE.equals(playing)||Boolean.TRUE.equals(playing)&&category!=null&&category>100;}
         boolean call(){return Boolean.TRUE.equals(playing)&&category!=null&&category>=500;}
     }
+    record PeerPlayback(Message message, long sequence) {}
+
+    static boolean canAutomaticallySwitch(String self, String source, int type, long sourceSequence,
+                                          List<Peer> records, java.util.Map<String, PeerPlayback> playback,
+                                          boolean returningToGame) {
+        if (records == null) return false;
+        if (type != 0 && !self.equals(source)) {
+            // The game return already debounces a peer's pause. Ordinary starts
+            // wait for the earbuds to release the active source.
+            if (!returningToGame || type != 2 || source == null) return false;
+            PeerPlayback report = playback.get(source);
+            if (report == null || report.sequence() <= sourceSequence
+                    || !Boolean.FALSE.equals(report.message().playing())) return false;
+        }
+        for (Peer peer : records) {
+            if (peer.role() == 0 || self.equals(peer.address())) continue;
+            PeerPlayback report = playback.get(peer.address());
+            if (report != null && (report.message().call() || report.sequence() > sourceSequence
+                    && Boolean.TRUE.equals(report.message().playing()))) return false;
+            if (source == null && (report == null || !Boolean.FALSE.equals(report.message().playing()))) return false;
+        }
+        return true;
+    }
+
     static Message response(byte[] data,int n){
         if(!header(data,n)||data[4]!=0x11||n<16||data[14]!=1)throw new IllegalArgumentException("Truncated Smart Routing response");
         int size=14+(data[12]&255)+((data[13]&255)<<8);
