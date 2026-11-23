@@ -29,6 +29,9 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
     private static final PathInterpolator EXIT = new PathInterpolator(0.4f, 0f, 0.2f, 1f);
     private static final int FIRST_ROW_TIMEOUT_MS = 480;
     private static final int MODE_ROW_OFFSET_DP = 12;
+    private static final int MODE_ROW_SIDE_MARGIN_DP = 16;
+    private static final int MAX_MODE_ROW_WIDTH_DP = 336;
+    private static final int MAX_MODE_SLOT_WIDTH_DP = 108;
     private static final List<QuickAudioSegments.Mode> LISTENING_MODES = List.of(
             new QuickAudioSegments.Mode(3, "通透", "qs_detail_tile_noise_reduction_transparent"),
             new QuickAudioSegments.Mode(4, "自适应", "qs_detail_tile_noise_reduction_adaptive"),
@@ -62,7 +65,7 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
         Method detach = Reflect.method(root, "onViewDetached");
         Method setTiles = Reflect.method(tiles, "setTiles");
         Method setTilesChanged = Reflect.method(tiles, "setTilesChanged", int.class);
-        QuickAudioSegments segments = new QuickAudioSegments(module, loader);
+        QuickAudioTrack track = loadTrack(module, loader);
         QuickAudioNative nativeTiles = new QuickAudioNative(module, loader);
         QuickAudioSnapshots snapshots = new QuickAudioSnapshots(IO);
         module.hook(Reflect.method(app, "onCreate")).intercept(chain -> {
@@ -153,7 +156,7 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
                     var panel = new QuickAudioPanel(module, owner, (View) Reflect.field(owner, "mView"),
                             container, nativeTiles, snapshots,
                             Reflect.field(volumeController, "earphoneController"), getRepository.invoke(owner),
-                            tilesController, state, tileType, segments);
+                            tilesController, state, tileType, track);
                     PANELS.put(owner, panel);
                     panel.open();
                 }
@@ -164,6 +167,15 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
             return original;
         });
         module.info("Quick Settings native AirPods tile hooks installed");
+    }
+
+    private static QuickAudioTrack loadTrack(ColorPodsModule module, ClassLoader loader) {
+        try {
+            return new QuickAudioTrack(loader);
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            module.error("Quick Settings native mode background unavailable", e);
+            return null;
+        }
     }
 
     private static void remove(Object owner) {
@@ -184,7 +196,7 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
     private final Object tilesController;
     private final Class<?> stateType;
     private final Class<?> tileType;
-    private final QuickAudioSegments segments;
+    private final QuickAudioTrack track;
     private final int stockCount;
     private final Map<View, Object> modeClicks = new IdentityHashMap<>();
     private final List<View> hiddenTiles = new ArrayList<>();
@@ -210,6 +222,7 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
     private String expandedControl;
     private boolean enteringModes;
     private boolean exitingModes;
+    private boolean trackUnavailable;
 
     private record ModeOrigin(float x, float y, float scaleX, float scaleY) {
         static ModeOrigin fromTile(View tile, View container, int modeWidth, int modeHeight, int rowOffset) {
@@ -228,7 +241,7 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
     private QuickAudioPanel(ColorPodsModule module, Object owner, View dialogView, FrameLayout container,
                             QuickAudioNative nativeTiles, QuickAudioSnapshots snapshots,
                             Object earphoneController, Object repository, Object tilesController, Class<?> stateType,
-                            Class<?> tileType, QuickAudioSegments segments) {
+                            Class<?> tileType, QuickAudioTrack track) {
         this.module = module;
         this.owner = owner;
         this.dialogView = dialogView;
@@ -242,7 +255,7 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
         this.tilesController = tilesController;
         this.stateType = stateType;
         this.tileType = tileType;
-        this.segments = segments;
+        this.track = track;
         this.stockCount = container.getChildCount();
     }
 
@@ -333,7 +346,10 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
             bindTiles();
             if (modeStrip != null) {
                 if (!adapted) closeModes();
-                else modeStrip.update(status.getInt(expandedControl, -1));
+                else {
+                    modeStrip.update(status.getInt(expandedControl, -1));
+                    updateModeTrack();
+                }
             }
             if (waitingForRow) {
                 expectedTiles = 1;
@@ -442,18 +458,21 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
             }
             if (options.isEmpty()) return;
             String action = listening ? "listening" : "spatial";
-            int reserved = QuickAudioSegments.dp(context, 2 * QuickAudioSegments.BACK_WIDTH_DP);
-            int width = Math.min(QuickAudioSegments.dp(context, 336), container.getWidth() - reserved);
+            int preferredWidth = Math.min(MAX_MODE_ROW_WIDTH_DP, options.size() * MAX_MODE_SLOT_WIDTH_DP);
+            int sideMargin = QuickAudioSegments.dp(context, MODE_ROW_SIDE_MARGIN_DP);
+            int width = Math.min(QuickAudioSegments.dp(context, preferredWidth), container.getWidth() - 2 * sideMargin);
             if (width <= 0) return;
             int offset = QuickAudioSegments.dp(context, MODE_ROW_OFFSET_DP);
-            int height = QuickAudioSegments.dp(context, QuickAudioSegments.STRIP_HEIGHT_DP);
+            int height = QuickAudioSegments.dp(context, QuickAudioSegments.TRACK_HEIGHT_DP);
             modeOrigin = ModeOrigin.fromTile(tile, container, width, height, offset);
-            modeStrip = segments.new Strip(context, options, status.getInt(action, -1), width,
-                    this::animateCloseModes, value -> select(address, action, value));
+            modeStrip = new QuickAudioSegments.Strip(context, options, status.getInt(action, -1), width, track,
+                    value -> select(address, action, value));
             expandedControl = action;
-            var layout = new FrameLayout.LayoutParams(width + reserved, height, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+            updateModeTrack();
+            var layout = new FrameLayout.LayoutParams(width, FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP | Gravity.CENTER_HORIZONTAL);
             layout.topMargin = offset;
-            container.addView(modeStrip.view, layout);
+            container.addView(modeStrip, layout);
             animateOpenModes();
         } catch (Exception | LinkageError e) {
             closeModes();
@@ -461,11 +480,21 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
         }
     }
 
+    private void updateModeTrack() {
+        if (trackUnavailable) return;
+        try {
+            modeStrip.updateTrack(container.getChildAt(0));
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            trackUnavailable = true;
+            module.error("Quick Settings native mode background unavailable", e);
+        }
+    }
+
     private void hideTilesForModes() {
         if (exitingModes) return;
         for (int index = 0; index < container.getChildCount(); index++) {
             View child = container.getChildAt(index);
-            if (child != modeStrip.view && child.getVisibility() == View.VISIBLE) {
+            if (child != modeStrip && child.getVisibility() == View.VISIBLE) {
                 if (!hiddenTiles.contains(child)) hiddenTiles.add(child);
                 if (!enteringModes) child.setVisibility(View.INVISIBLE);
             }
@@ -485,7 +514,7 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
                     .setDuration(105).setInterpolator(EXIT).start();
         }
         main.postDelayed(finishEnter, 105);
-        View strip = modeStrip.segments;
+        View strip = modeStrip;
         strip.setAlpha(0.26f);
         strip.setScaleX(modeOrigin.scaleX());
         strip.setScaleY(modeOrigin.scaleY());
@@ -512,7 +541,7 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
             tile.animate().alpha(1f).scaleX(1f).scaleY(1f)
                     .setDuration(220).setInterpolator(ENTER).start();
         }
-        View strip = modeStrip.segments;
+        View strip = modeStrip;
         strip.animate().cancel();
         modeStrip.fadeContents(false);
         strip.animate().alpha(0f).scaleX(modeOrigin.scaleX()).scaleY(modeOrigin.scaleY())
@@ -538,9 +567,8 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
         enteringModes = false;
         exitingModes = false;
         main.removeCallbacks(finishEnter);
-        closing.segments.animate().cancel();
-        container.removeView(closing.view);
         closing.close();
+        container.removeView(closing);
         expandedControl = null;
         modeOrigin = null;
         for (View tile : hiddenTiles) {
@@ -554,14 +582,15 @@ final class QuickAudioPanel implements View.OnAttachStateChangeListener {
         hiddenTiles.clear();
     }
 
-    private void select(String address, String action, int selection) {
-        if (!active || busy || exitingModes || address == null || !address.equals(status.getString("address"))) return;
+    private boolean select(String address, String action, int selection) {
+        if (!active || busy || exitingModes || address == null || !address.equals(status.getString("address"))) return false;
         busy = true;
         main.removeCallbacks(refresh);
         Bundle args = BridgeClient.forDevice(address);
         args.putString("action", action);
         args.putInt("selection", selection);
         request(args, true);
+        return true;
     }
 
     private void showConversation(int mode) throws ReflectiveOperationException {
